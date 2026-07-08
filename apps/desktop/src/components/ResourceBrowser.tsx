@@ -250,9 +250,9 @@ const TYPED_KINDS: ResourceKind[] = [
 const isGeneric = (kind: ResourceKind) => !TYPED_KINDS.includes(kind);
 const isNamespaced = (kind: ResourceKind) => !CLUSTER_SCOPED.includes(kind);
 const isWatchable = (kind: ResourceKind) => (WATCHABLE_KINDS as readonly string[]).includes(kind);
-// Views that let users show/hide columns (persisted per kind). Nodes to start.
-const COLUMN_PICKER_KINDS: ResourceKind[] = ["nodes"];
-const supportsColumnPicker = (kind: ResourceKind) => COLUMN_PICKER_KINDS.includes(kind);
+// Every resource table lets users show/hide columns (persisted per kind).
+// The first column (the row identifier) is pinned and can't be hidden.
+const supportsColumnPicker = (_kind: ResourceKind) => true;
 const POLL_MS = 5000;
 
 function phaseKind(phase: string): StatusKind {
