@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ArrowLeftRight, Columns2, Link2, X } from "lucide-react";
 import { ClusterHotbar } from "./components/ClusterHotbar";
 import { ResourceTabs, type TabDescriptor } from "./components/ResourceTabs";
 import { Sidebar } from "./components/Sidebar";
@@ -22,7 +23,7 @@ import { Toaster } from "./components/ui/sonner";
 import { Dock, type DockSession, type DockKind } from "./components/Dock";
 import { StatusBar } from "./components/StatusBar";
 import { LandingPage } from "./components/LandingPage";
-import { getInitialTheme, applyTheme, type Theme, type ThemeMode, type ThemeName } from "./ui";
+import { getInitialTheme, applyTheme, IconButton, type Theme, type ThemeMode, type ThemeName } from "./ui";
 import type { CrdRef } from "./lib/crds";
 import type { ResourceTarget } from "./lib/resourceNavigation";
 import {
@@ -44,7 +45,25 @@ import {
   orderContexts,
   loadUpdateChannel,
   loadMcpSettings,
+  loadDeckLayout,
+  saveDeckLayout,
 } from "./lib/settings";
+import {
+  createDeck,
+  splitDeck,
+  closePane,
+  focusPane,
+  focusedPane,
+  otherPane,
+  isSplit,
+  swapPanes,
+  setRatio,
+  setLinked,
+  updatePane,
+  clampRatio,
+  type Deck,
+  type Pane,
+} from "./lib/panes";
 import { startMcpHttp } from "./lib/mcp";
 import { checkForUpdateAndNotify } from "./lib/updateNotifier";
 import { notify } from "./lib/notify";
@@ -66,11 +85,34 @@ interface ViewTab {
   namespace?: string;
 }
 
+type AppPane = Pane<ViewTab, DockSession>;
+type AppDeck = Deck<ViewTab, DockSession>;
+
+/** The active tab of a pane, if any. */
+function activeTabOf(pane: AppPane | null): ViewTab | null {
+  if (!pane) return null;
+  return pane.tabs.find((t) => t.id === pane.activeTabId) ?? null;
+}
+
+/** Kinds that make sense to mirror across linked panes. */
+function isMirrorableKind(kind: ResourceKind): boolean {
+  return kind !== "settings" && kind !== "newresource" && kind !== "editresource";
+}
+
 export function App() {
-  // Each tab is a (cluster, resource-kind) view, like browser tabs.
-  const [tabs, setTabs] = useState<ViewTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<number | null>(null);
-  const [query, setQuery] = useState("");
+  // The deck: one or two panes (the two hulls), each a full workspace with its
+  // own tab stack and bottom dock. All tab/dock operations are deck transforms.
+  const tabIdRef = useRef(1);
+  const paneIdRef = useRef(2);
+  const [deck, setDeck] = useState<AppDeck>(() => {
+    const persisted = loadDeckLayout();
+    let d = createDeck<ViewTab, DockSession>(0);
+    d = { ...d, ratio: persisted.ratio, linked: persisted.linked };
+    if (persisted.split) d = splitDeck(d, 1);
+    return d;
+  });
+  // Per-pane search query for the resource browser toolbar.
+  const [paneQuery, setPaneQuery] = useState<Record<number, string>>({});
   const [layout, setLayout] = useState(loadWorkspaceLayout);
   const [sidebarWidth, setSidebarWidth] = useState(layout.leftSidebarWidth);
   const [contextProfiles, setContextProfiles] = useState(loadContextProfiles);
@@ -82,14 +124,12 @@ export function App() {
   const [clusterNs, setClusterNs] = useState<Record<string, string>>(loadClusterNamespaces);
   // Global fallback namespace for clusters with no remembered selection.
   const [defaultNs, setDefaultNs] = useState(getDefaultNamespace);
-  const tabIdRef = useRef(1);
+  const dockIdRef = useRef(1);
   const focusNonce = useRef(0);
-  // Mirror the active tab id into a ref so the (once-registered) Cmd+W menu
-  // event listener always sees the latest value without re-subscribing.
-  const activeTabIdRef = useRef<number | null>(null);
-  activeTabIdRef.current = activeTabId;
-  const tabsRef = useRef<ViewTab[]>([]);
-  tabsRef.current = tabs;
+  // Mirror the deck into a ref so once-registered listeners (Cmd+W menu event,
+  // keyboard shortcuts) always see the latest state without re-subscribing.
+  const deckRef = useRef(deck);
+  deckRef.current = deck;
   // Deep-link the Settings tab to a section (e.g. from the update toast). The
   // nonce bumps to remount SettingsView at the requested section when asked.
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("appearance");
@@ -98,12 +138,36 @@ export function App() {
   // Persist per-cluster namespace whenever it changes.
   useEffect(() => saveClusterNamespaces(clusterNs), [clusterNs]);
 
+  // Persist the deck shape (split / ratio / linked) whenever it changes.
+  useEffect(
+    () => saveDeckLayout({ split: isSplit(deck), ratio: deck.ratio, linked: deck.linked }),
+    [deck],
+  );
+
   /** The namespace a new tab in `cluster` should start on. */
   const namespaceFor = (cluster: string) => clusterNs[cluster] ?? defaultNs;
 
   /** Update a tab's namespace filter and remember it as the cluster's default. */
-  function setTabNamespace(tabId: number, cluster: string, ns: string) {
-    setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, namespace: ns } : t)));
+  function setTabNamespace(paneId: number, tabId: number, cluster: string, ns: string) {
+    setDeck((d) => {
+      let next = updatePane(d, paneId, (p) => ({
+        ...p,
+        tabs: p.tabs.map((t) => (t.id === tabId ? { ...t, namespace: ns } : t)),
+      }));
+      // Linked cruising: mirror the namespace onto the other pane's active tab.
+      if (next.linked && isSplit(next)) {
+        const other = otherPane(next, paneId);
+        const otherActive = activeTabOf(other);
+        if (other && otherActive?.cluster) {
+          next = updatePane(next, other.id, (p) => ({
+            ...p,
+            tabs: p.tabs.map((t) => (t.id === otherActive.id ? { ...t, namespace: ns } : t)),
+          }));
+          setClusterNs((m) => ({ ...m, [otherActive.cluster as string]: ns }));
+        }
+      }
+      return next;
+    });
     setClusterNs((m) => ({ ...m, [cluster]: ns }));
   }
 
@@ -159,30 +223,72 @@ export function App() {
     }));
   }
 
-  // Global Cmd/Ctrl-K opens the command palette.
+  /** Split the deck (seeding the new pane with the current view) or collapse it. */
+  function toggleSplit() {
+    setDeck((d) => {
+      if (isSplit(d)) {
+        const other = otherPane(d, d.focusedPaneId);
+        return other ? closePane(d, other.id) : d;
+      }
+      const source = focusedPane(d);
+      const active = activeTabOf(source);
+      const seed: ViewTab[] =
+        active && active.cluster && isMirrorableKind(active.kind) && !active.edit && !active.create
+          ? [
+              {
+                id: tabIdRef.current++,
+                cluster: active.cluster,
+                kind: active.kind,
+                crd: active.crd,
+                namespace: active.namespace,
+              },
+            ]
+          : [];
+      return splitDeck(d, paneIdRef.current++, seed);
+    });
+  }
+
+  // Global shortcuts: Cmd/Ctrl-K palette, Cmd/Ctrl-\ split, Cmd/Ctrl-Alt-←/→ focus.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen((o) => !o);
+      } else if (e.key === "\\") {
+        e.preventDefault();
+        toggleSplit();
+      } else if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        setDeck((d) => {
+          if (!isSplit(d)) return d;
+          const target = e.key === "ArrowLeft" ? d.panes[0] : d.panes[1];
+          return focusPane(d, target.id);
+        });
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // toggleSplit only touches refs + functional setDeck, so this stays stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // On macOS the native menu routes Cmd+W to a custom "Close" item (see
-  // src-tauri) which emits `close-active-tab`. Close the active tab here, and
-  // only fall back to closing the window when no tabs remain — mirroring
-  // browser-style tab behavior.
+  // src-tauri) which emits `close-active-tab`. Close the focused pane's active
+  // tab here; an empty split pane closes itself, and the window only closes
+  // when nothing is left — mirroring browser-style tab behavior.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     const unlistenPromise = listen("close-active-tab", () => {
-      const id = activeTabIdRef.current;
-      if (id != null) {
-        const closingLastTab = tabsRef.current.length === 1 && tabsRef.current[0]?.id === id;
-        closeView(id);
-        if (closingLastTab) void getCurrentWindow().close();
+      const d = deckRef.current;
+      const pane = focusedPane(d);
+      if (pane.activeTabId != null) {
+        const totalTabs = d.panes.reduce((n, p) => n + p.tabs.length, 0);
+        closeView(pane.id, pane.activeTabId);
+        if (totalTabs === 1 && !isSplit(d)) void getCurrentWindow().close();
+      } else if (isSplit(d)) {
+        setDeck((dd) => closePane(dd, focusedPane(dd).id));
       } else {
         void getCurrentWindow().close();
       }
@@ -192,30 +298,51 @@ export function App() {
     };
   }, []);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const pane = focusedPane(deck);
+  const activeTab = activeTabOf(pane);
   const activeCluster = activeTab?.cluster ?? null;
   const activeKind: ResourceKind = activeTab?.kind ?? "pods";
-  const activeCrd = activeTab?.crd ?? null;
+  // Every cluster with an open tab, across both panes (drives the sidebar tree).
   const clusters = orderContexts(
-    [...new Set(tabs.flatMap((t) => (t.cluster ? [t.cluster] : [])))].map((name) => ({ name })),
+    [...new Set(deck.panes.flatMap((p) => p.tabs.flatMap((t) => (t.cluster ? [t.cluster] : []))))].map(
+      (name) => ({ name }),
+    ),
     contextOrder,
   ).map(({ name }) => name);
 
-  /** Open (or focus, if already open) a resource view for a cluster + kind. */
-  function openView(cluster: string, kind: ResourceKind) {
+  /** Pure transform: open (or focus) a (cluster, kind) view inside one pane. */
+  function openViewOn(d: AppDeck, paneId: number, cluster: string, kind: ResourceKind): AppDeck {
+    const target = d.panes.find((p) => p.id === paneId);
+    if (!target) return d;
+    const existing = target.tabs.find((t) => t.cluster === cluster && t.kind === kind && !t.crd);
+    if (existing) {
+      return updatePane(d, paneId, (p) => ({ ...p, activeTabId: existing.id }));
+    }
+    const id = tabIdRef.current++;
+    const tab: ViewTab = { id, cluster, kind, namespace: namespaceFor(cluster) };
+    return updatePane(d, paneId, (p) => ({ ...p, tabs: [...p.tabs, tab], activeTabId: id }));
+  }
+
+  /** Open (or focus) a resource view for a cluster + kind in a pane (default: focused). */
+  function openView(cluster: string, kind: ResourceKind, target?: { paneId?: number }) {
     if (kind === "settings") {
       openSettings();
       return;
     }
-    const existing = tabs.find((t) => t.cluster === cluster && t.kind === kind && !t.crd);
-    if (existing) {
-      setActiveTabId(existing.id);
-      return;
-    }
-    const id = tabIdRef.current++;
-    setTabs((ts) => [...ts, { id, cluster, kind, namespace: namespaceFor(cluster) }]);
-    setActiveTabId(id);
-    setQuery("");
+    const paneId = target?.paneId ?? deck.focusedPaneId;
+    setDeck((d) => {
+      let next = openViewOn(d, paneId, cluster, kind);
+      next = focusPane(next, paneId);
+      // Linked cruising: the other pane follows onto the same kind.
+      if (next.linked && isSplit(next) && isMirrorableKind(kind)) {
+        const other = otherPane(next, paneId);
+        const otherCluster =
+          activeTabOf(other)?.cluster ?? other?.tabs.find((t) => t.cluster)?.cluster ?? null;
+        if (other && otherCluster) next = openViewOn(next, other.id, otherCluster, kind);
+      }
+      return next;
+    });
+    setPaneQuery((q) => ({ ...q, [paneId]: "" }));
   }
 
   /** Open the single workspace-level Settings tab, optionally at a section. */
@@ -226,15 +353,24 @@ export function App() {
       // tab is already open on another section.
       setSettingsSectionNonce((n) => n + 1);
     }
-    const existing = tabs.find((t) => t.kind === "settings" && !t.cluster);
-    if (existing) {
-      setActiveTabId(existing.id);
-      return;
-    }
-    const id = tabIdRef.current++;
-    setTabs((ts) => [...ts, { id, cluster: null, kind: "settings" }]);
-    setActiveTabId(id);
-    setQuery("");
+    setDeck((d) => {
+      // Settings lives once per workspace: focus it wherever it's open.
+      for (const p of d.panes) {
+        const existing = p.tabs.find((t) => t.kind === "settings" && !t.cluster);
+        if (existing) {
+          return focusPane(
+            updatePane(d, p.id, (x) => ({ ...x, activeTabId: existing.id })),
+            p.id,
+          );
+        }
+      }
+      const id = tabIdRef.current++;
+      return updatePane(d, d.focusedPaneId, (p) => ({
+        ...p,
+        tabs: [...p.tabs, { id, cluster: null, kind: "settings" as ResourceKind }],
+        activeTabId: id,
+      }));
+    });
   }
   // Keep a stable handle to openSettings so the update-check effect's toast
   // action always uses the current tab state, not a stale closure.
@@ -269,106 +405,158 @@ export function App() {
     if (mcp.enabled) void startMcpHttp(mcp.port).catch(() => {});
   }, []);
 
-  /** Open a resource's kind view and deep-link to its detail (from search). */
-  function openResource(kind: ResourceKind, namespace: string | null, name: string) {
-    if (!activeCluster) return;
+  /** Open a resource's kind view in a pane and deep-link to its detail. */
+  function openResource(
+    kind: ResourceKind,
+    namespace: string | null,
+    name: string,
+    target?: { paneId?: number },
+  ) {
+    const paneId = target?.paneId ?? deck.focusedPaneId;
+    const sourcePane = deck.panes.find((p) => p.id === paneId) ?? pane;
+    const cluster = activeTabOf(sourcePane)?.cluster ?? null;
+    if (!cluster) return;
     const focus = { name, namespace, nonce: ++focusNonce.current };
     // Filter the list to the resource's namespace so its row is present to focus.
     const ns = namespace ?? "";
-    const existing = tabs.find((t) => t.cluster === activeCluster && t.kind === kind && !t.crd);
-    if (existing) {
-      setTabs((ts) => ts.map((t) => (t.id === existing.id ? { ...t, focus, namespace: ns } : t)));
-      setActiveTabId(existing.id);
-    } else {
-      const id = tabIdRef.current++;
-      setTabs((ts) => [...ts, { id, cluster: activeCluster, kind, focus, namespace: ns }]);
-      setActiveTabId(id);
-    }
-    setClusterNs((m) => ({ ...m, [activeCluster]: ns }));
-    setQuery("");
+    setDeck((d) =>
+      focusPane(
+        updatePane(d, paneId, (p) => {
+          const existing = p.tabs.find((t) => t.cluster === cluster && t.kind === kind && !t.crd);
+          if (existing) {
+            return {
+              ...p,
+              tabs: p.tabs.map((t) => (t.id === existing.id ? { ...t, focus, namespace: ns } : t)),
+              activeTabId: existing.id,
+            };
+          }
+          const id = tabIdRef.current++;
+          return {
+            ...p,
+            tabs: [...p.tabs, { id, cluster, kind, focus, namespace: ns }],
+            activeTabId: id,
+          };
+        }),
+        paneId,
+      ),
+    );
+    setClusterNs((m) => ({ ...m, [cluster]: ns }));
+    setPaneQuery((q) => ({ ...q, [paneId]: "" }));
   }
 
   /** Resolve a canonical Kubernetes kind from a detail link to its product view. */
-  function openLinkedResource(target: ResourceTarget) {
+  function openLinkedResource(target: ResourceTarget, paneId?: number) {
     const entry = Object.entries(K8S_KIND).find(([, k8sKind]) => k8sKind === target.kind);
     if (!entry) return;
-    openResource(entry[0] as ResourceKind, target.namespace, target.name);
+    openResource(entry[0] as ResourceKind, target.namespace, target.name, { paneId });
   }
 
   /** Open a fresh "new resource" editor tab, optionally seeded with a template. */
-  function openNewResource(initialKind?: string) {
-    if (!activeCluster) return;
+  function openNewResource(initialKind?: string, paneId?: number) {
+    const targetPaneId = paneId ?? deck.focusedPaneId;
+    const cluster = activeTabOf(deck.panes.find((p) => p.id === targetPaneId) ?? pane)?.cluster;
+    if (!cluster) return;
     const id = tabIdRef.current++;
-    setTabs((ts) => [...ts, { id, cluster: activeCluster, kind: "newresource", create: { initialKind } }]);
-    setActiveTabId(id);
+    setDeck((d) =>
+      updatePane(d, targetPaneId, (p) => ({
+        ...p,
+        tabs: [...p.tabs, { id, cluster, kind: "newresource" as ResourceKind, create: { initialKind } }],
+        activeTabId: id,
+      })),
+    );
   }
 
   /** Open (or focus) a full-tab editor preloaded with a resource's manifest. */
-  function openEditResource(kind: string, namespace: string | null, name: string) {
-    if (!activeCluster) return;
-    const existing = tabs.find(
-      (t) =>
-        t.kind === "editresource" &&
-        t.cluster === activeCluster &&
-        t.edit?.kind === kind &&
-        (t.edit?.namespace ?? null) === (namespace ?? null) &&
-        t.edit?.name === name,
+  function openEditResource(kind: string, namespace: string | null, name: string, paneId?: number) {
+    const targetPaneId = paneId ?? deck.focusedPaneId;
+    const cluster = activeTabOf(deck.panes.find((p) => p.id === targetPaneId) ?? pane)?.cluster;
+    if (!cluster) return;
+    setDeck((d) =>
+      updatePane(d, targetPaneId, (p) => {
+        const existing = p.tabs.find(
+          (t) =>
+            t.kind === "editresource" &&
+            t.cluster === cluster &&
+            t.edit?.kind === kind &&
+            (t.edit?.namespace ?? null) === (namespace ?? null) &&
+            t.edit?.name === name,
+        );
+        if (existing) return { ...p, activeTabId: existing.id };
+        const id = tabIdRef.current++;
+        return {
+          ...p,
+          tabs: [
+            ...p.tabs,
+            { id, cluster, kind: "editresource" as ResourceKind, edit: { kind, namespace, name } },
+          ],
+          activeTabId: id,
+        };
+      }),
     );
-    if (existing) {
-      setActiveTabId(existing.id);
-      return;
-    }
-    const id = tabIdRef.current++;
-    setTabs((ts) => [...ts, { id, cluster: activeCluster, kind: "editresource", edit: { kind, namespace, name } }]);
-    setActiveTabId(id);
   }
 
   /** Open (or focus) a custom-resource view for a cluster + CRD. */
-  function openCrdView(cluster: string, crd: CrdRef) {
-    const existing = tabs.find((t) => t.cluster === cluster && t.crd?.name === crd.name);
-    if (existing) {
-      setActiveTabId(existing.id);
-      return;
-    }
-    const id = tabIdRef.current++;
-    setTabs((ts) => [...ts, { id, cluster, kind: "overview", crd }]);
-    setActiveTabId(id);
-    setQuery("");
-  }
-  function closeView(id: number) {
-    setTabs((ts) => {
-      const remaining = ts.filter((t) => t.id !== id);
-      setActiveTabId((a) => (a === id ? (remaining.at(-1)?.id ?? null) : a));
-      return remaining;
-    });
-  }
-  /** Close every tab except `id`, then focus it. */
-  function closeOtherViews(id: number) {
-    setTabs((ts) => ts.filter((t) => t.id === id));
-    setActiveTabId(id);
-  }
-  /** Close every tab to the right of `id`. */
-  function closeViewsToRight(id: number) {
-    setTabs((ts) => {
-      const idx = ts.findIndex((t) => t.id === id);
-      if (idx < 0) return ts;
-      const remaining = ts.slice(0, idx + 1);
-      setActiveTabId((a) => (remaining.some((t) => t.id === a) ? a : id));
-      return remaining;
-    });
-  }
-  function closeAllViews() {
-    setTabs([]);
-    setActiveTabId(null);
+  function openCrdView(cluster: string, crd: CrdRef, target?: { paneId?: number }) {
+    const paneId = target?.paneId ?? deck.focusedPaneId;
+    setDeck((d) =>
+      focusPane(
+        updatePane(d, paneId, (p) => {
+          const existing = p.tabs.find((t) => t.cluster === cluster && t.crd?.name === crd.name);
+          if (existing) return { ...p, activeTabId: existing.id };
+          const id = tabIdRef.current++;
+          return {
+            ...p,
+            tabs: [...p.tabs, { id, cluster, kind: "overview" as ResourceKind, crd }],
+            activeTabId: id,
+          };
+        }),
+        paneId,
+      ),
+    );
+    setPaneQuery((q) => ({ ...q, [paneId]: "" }));
   }
 
-  // Bottom dock state (terminals + logs as tabs).
-  const [dockSessions, setDockSessions] = useState<DockSession[]>([]);
-  const [activeDock, setActiveDock] = useState<number | null>(null);
-  const [dockHeight, setDockHeight] = useState(300);
-  const dockIdRef = useRef(1);
+  function closeView(paneId: number, id: number) {
+    setDeck((d) =>
+      updatePane(d, paneId, (p) => {
+        const remaining = p.tabs.filter((t) => t.id !== id);
+        return {
+          ...p,
+          tabs: remaining,
+          activeTabId: p.activeTabId === id ? (remaining.at(-1)?.id ?? null) : p.activeTabId,
+        };
+      }),
+    );
+  }
+  /** Close every tab except `id` in a pane, then focus it. */
+  function closeOtherViews(paneId: number, id: number) {
+    setDeck((d) =>
+      updatePane(d, paneId, (p) => ({ ...p, tabs: p.tabs.filter((t) => t.id === id), activeTabId: id })),
+    );
+  }
+  /** Close every tab to the right of `id` in a pane. */
+  function closeViewsToRight(paneId: number, id: number) {
+    setDeck((d) =>
+      updatePane(d, paneId, (p) => {
+        const idx = p.tabs.findIndex((t) => t.id === id);
+        if (idx < 0) return p;
+        const remaining = p.tabs.slice(0, idx + 1);
+        return {
+          ...p,
+          tabs: remaining,
+          activeTabId: remaining.some((t) => t.id === p.activeTabId) ? p.activeTabId : id,
+        };
+      }),
+    );
+  }
+  function closeAllViews(paneId: number) {
+    setDeck((d) => updatePane(d, paneId, (p) => ({ ...p, tabs: [], activeTabId: null })));
+  }
 
+  // Bottom dock (terminals + logs) — per pane, so two log streams can race
+  // side by side when the deck is split.
   function openDock(
+    paneId: number,
     kind: DockKind,
     s: {
       context: string;
@@ -379,76 +567,162 @@ export function App() {
     },
   ) {
     const id = dockIdRef.current++;
-    setDockSessions((t) => [...t, { id, kind, ...s }]);
-    setActiveDock(id);
+    setDeck((d) =>
+      updatePane(d, paneId, (p) => ({
+        ...p,
+        dockSessions: [...p.dockSessions, { id, kind, ...s }],
+        activeDockId: id,
+      })),
+    );
   }
-  function closeDockTab(id: number) {
-    setDockSessions((t) => {
-      const remaining = t.filter((x) => x.id !== id);
-      setActiveDock((a) => (a === id ? (remaining.at(-1)?.id ?? null) : a));
-      return remaining;
-    });
+  function closeDockTab(paneId: number, id: number) {
+    setDeck((d) =>
+      updatePane(d, paneId, (p) => {
+        const remaining = p.dockSessions.filter((x) => x.id !== id);
+        return {
+          ...p,
+          dockSessions: remaining,
+          activeDockId: p.activeDockId === id ? (remaining.at(-1)?.id ?? null) : p.activeDockId,
+        };
+      }),
+    );
   }
-  function closeDock() {
-    setDockSessions([]);
-    setActiveDock(null);
+  function closeDock(paneId: number) {
+    setDeck((d) =>
+      updatePane(d, paneId, (p) => ({ ...p, dockSessions: [], activeDockId: null })),
+    );
   }
 
-  const tabDescriptors: TabDescriptor[] = tabs.map((t) => ({
-    id: t.id,
-    label: t.edit
-      ? `edit: ${t.edit.kind}/${t.edit.name}`
-      : t.cluster
-        ? `${t.crd ? t.crd.kind : RESOURCE_LABELS[t.kind]} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
-        : RESOURCE_LABELS[t.kind],
-  }));
+  // Drag-to-resize the split ratio.
+  const deckElRef = useRef<HTMLDivElement | null>(null);
+  const [dividerDragging, setDividerDragging] = useState(false);
+  function startDividerDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    const el = deckElRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setDividerDragging(true);
+    function onMove(ev: MouseEvent) {
+      const ratio = clampRatio((ev.clientX - rect.left) / rect.width);
+      setDeck((d) => setRatio(d, ratio));
+    }
+    function onUp() {
+      setDividerDragging(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+    }
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
-  return (
-    <div
-      className={`cat-app${activeCluster ? "" : " cat-app--no-cluster"}`}
-      style={activeCluster ? { gridTemplateColumns: `75px ${sidebarWidth}px 1fr` } : undefined}
-    >
-      <ClusterHotbar
-        openContext={activeCluster}
-        onOpenContext={(ctx) => openView(ctx, "overview")}
-        theme={theme}
-        onToggleTheme={toggleThemeMode}
-        onOpenSettings={openSettings}
-        contextProfiles={contextProfiles}
-        kubeconfigFiles={kubeconfigFiles}
-        contextOrder={contextOrder}
-      />
-      {activeCluster && (
-        <Sidebar
-          clusters={clusters}
-          activeCluster={activeCluster}
-          activeKind={activeKind}
-          activeCrd={activeCrd}
-          onSelect={(c, k) => openView(c, k)}
-          onSelectCrd={(c, crd) => openCrdView(c, crd)}
-          contextProfiles={contextProfiles}
-          width={sidebarWidth}
-          onResize={setSidebarWidth}
-        />
-      )}
-      <div className="cat-main">
-        {tabs.length > 0 ? (
+  const split = isSplit(deck);
+
+  /** Everything a pane needs to render its content views. */
+  function renderPane(p: AppPane, index: number) {
+    const paneActiveTab = activeTabOf(p);
+    const paneCluster = paneActiveTab?.cluster ?? null;
+    const paneKind: ResourceKind = paneActiveTab?.kind ?? "pods";
+    const paneCrd = paneActiveTab?.crd ?? null;
+    const focused = p.id === deck.focusedPaneId;
+    const side = index === 0 ? "port" : "starboard";
+    const query = paneQuery[p.id] ?? "";
+    const setQuery = (q: string) => setPaneQuery((m) => ({ ...m, [p.id]: q }));
+
+    const tabDescriptors: TabDescriptor[] = p.tabs.map((t) => ({
+      id: t.id,
+      label: t.edit
+        ? `edit: ${t.edit.kind}/${t.edit.name}`
+        : t.cluster
+          ? `${t.crd ? t.crd.kind : RESOURCE_LABELS[t.kind]} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
+          : RESOURCE_LABELS[t.kind],
+    }));
+
+    return (
+      <section
+        key={p.id}
+        data-testid={`pane-${side}`}
+        className={`cat-pane${split && focused ? " cat-pane--focused" : ""}`}
+        style={split ? { flexGrow: index === 0 ? deck.ratio : 1 - deck.ratio, flexBasis: 0 } : undefined}
+        onMouseDownCapture={() => setDeck((d) => focusPane(d, p.id))}
+      >
+        {split && (
+          <header className="cat-pane-header">
+            <span className="cat-pane-header__side">{side}</span>
+            <span className="cat-pane-header__ctx">
+              <span
+                className={`size-2 shrink-0 rounded-full ${paneCluster ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
+              />
+              <span className="truncate">
+                {paneCluster ? contextDisplayName(paneCluster, contextProfiles[paneCluster]) : "No context"}
+              </span>
+              {paneActiveTab && (
+                <small className="truncate">
+                  {paneActiveTab.crd ? paneActiveTab.crd.kind : RESOURCE_LABELS[paneKind]}
+                </small>
+              )}
+            </span>
+            <span className="cat-pane-header__actions">
+              <button
+                type="button"
+                className={`cat-pane-header__action${deck.linked ? " cat-pane-header__action--on" : ""}`}
+                aria-label={deck.linked ? "Unlink panes" : "Link panes"}
+                aria-pressed={deck.linked}
+                title="Link panes: navigation mirrors across the deck"
+                onClick={() => setDeck((d) => setLinked(d, !d.linked))}
+              >
+                <Link2 aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="cat-pane-header__action"
+                aria-label="Swap panes"
+                title="Swap port and starboard"
+                onClick={() => setDeck((d) => swapPanes(d))}
+              >
+                <ArrowLeftRight aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="cat-pane-header__action"
+                aria-label={`Close ${side} pane`}
+                title="Close this pane"
+                onClick={() => setDeck((d) => closePane(d, p.id))}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </span>
+          </header>
+        )}
+        {p.tabs.length > 0 ? (
           <>
             <ResourceTabs
               tabs={tabDescriptors}
-              activeId={activeTabId}
-              onActivate={setActiveTabId}
-              onClose={closeView}
-              onCloseOthers={closeOtherViews}
-              onCloseToRight={closeViewsToRight}
-              onCloseAll={closeAllViews}
+              activeId={p.activeTabId}
+              onActivate={(id) =>
+                setDeck((d) => focusPane(updatePane(d, p.id, (x) => ({ ...x, activeTabId: id })), p.id))
+              }
+              onClose={(id) => closeView(p.id, id)}
+              onCloseOthers={(id) => closeOtherViews(p.id, id)}
+              onCloseToRight={(id) => closeViewsToRight(p.id, id)}
+              onCloseAll={() => closeAllViews(p.id)}
+              trailing={
+                !split ? (
+                  <IconButton
+                    icon={Columns2}
+                    label="Split the deck (⌘\)"
+                    onClick={toggleSplit}
+                  />
+                ) : undefined
+              }
             />
-            {activeTab && (
+            {paneActiveTab && (
               <>
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-                  {activeKind === "settings" ? (
+                  {paneKind === "settings" ? (
                     <SettingsView
-                      key={`${activeTab.id}:${settingsSectionNonce}`}
+                      key={`${paneActiveTab.id}:${settingsSectionNonce}`}
                       initialSection={settingsInitialSection}
                       theme={theme}
                       onThemeNameChange={setThemeName}
@@ -464,72 +738,72 @@ export function App() {
                       contextOrder={contextOrder}
                       onContextOrderChange={changeContextOrder}
                     />
-                  ) : activeTab.crd && activeCluster ? (
+                  ) : paneActiveTab.crd && paneCluster ? (
                     <CustomResourceBrowser
-                      key={activeTab.id}
-                      context={activeCluster}
-                      crd={activeTab.crd}
+                      key={paneActiveTab.id}
+                      context={paneCluster}
+                      crd={paneActiveTab.crd}
                       query={query}
                       onQueryChange={setQuery}
                       detailDrawerWidth={layout.rightSidebarWidth}
                     />
-                  ) : activeCluster && activeKind === "overview" ? (
+                  ) : paneCluster && paneKind === "overview" ? (
                     <div className="min-h-0 flex-1 overflow-auto p-3">
                       <ClusterOverview
-                        key={activeTab.id}
-                        context={activeCluster}
-                        onOpenView={(kind) => openView(activeCluster, kind)}
+                        key={paneActiveTab.id}
+                        context={paneCluster}
+                        onOpenView={(kind) => openView(paneCluster, kind, { paneId: p.id })}
                       />
                     </div>
-                  ) : activeCluster && activeKind === "portforwards" ? (
-                    <PortForwardsView key={activeTab.id} context={activeCluster} />
-                  ) : activeCluster && activeKind === "helmreleases" ? (
+                  ) : paneCluster && paneKind === "portforwards" ? (
+                    <PortForwardsView key={paneActiveTab.id} context={paneCluster} />
+                  ) : paneCluster && paneKind === "helmreleases" ? (
                     <HelmReleasesView
-                      key={activeTab.id}
-                      context={activeCluster}
+                      key={paneActiveTab.id}
+                      context={paneCluster}
                       detailDrawerWidth={layout.rightSidebarWidth}
                     />
-                  ) : activeCluster && activeKind === "newresource" ? (
+                  ) : paneCluster && paneKind === "newresource" ? (
                     <NewResourceEditor
-                      key={activeTab.id}
-                      context={activeCluster}
-                      initialKind={activeTab.create?.initialKind}
+                      key={paneActiveTab.id}
+                      context={paneCluster}
+                      initialKind={paneActiveTab.create?.initialKind}
                     />
-                  ) : activeCluster && activeKind === "editresource" && activeTab.edit ? (
+                  ) : paneCluster && paneKind === "editresource" && paneActiveTab.edit ? (
                     <EditResourceTab
-                      key={activeTab.id}
-                      context={activeCluster}
-                      kind={activeTab.edit.kind}
-                      namespace={activeTab.edit.namespace}
-                      name={activeTab.edit.name}
+                      key={paneActiveTab.id}
+                      context={paneCluster}
+                      kind={paneActiveTab.edit.kind}
+                      namespace={paneActiveTab.edit.namespace}
+                      name={paneActiveTab.edit.name}
                     />
-                  ) : activeCluster ? (
+                  ) : paneCluster ? (
                     <ResourceBrowser
-                      key={activeTab.id}
-                      context={activeCluster}
-                      kind={activeKind}
+                      key={paneActiveTab.id}
+                      context={paneCluster}
+                      kind={paneKind}
                       query={query}
                       onQueryChange={setQuery}
-                      onOpenTerminal={(s) => openDock("terminal", s)}
-                      onOpenLogs={(s) => openDock("logs", s)}
-                      onOpenEdit={openEditResource}
+                      onOpenTerminal={(s) => openDock(p.id, "terminal", s)}
+                      onOpenLogs={(s) => openDock(p.id, "logs", s)}
+                      onOpenEdit={(kind, namespace, name) => openEditResource(kind, namespace, name, p.id)}
                       onOpenWorkloadLogs={(s) =>
-                        openDock("logs", {
+                        openDock(p.id, "logs", {
                           context: s.context,
                           namespace: s.namespace,
                           workload: { kind: s.kind, name: s.name },
                         })
                       }
-                      onOpenNew={openNewResource}
-                      onOpenResource={openLinkedResource}
-                      focus={activeTab.focus}
-                      initialNamespace={activeTab.namespace ?? ""}
-                      onNamespaceChange={(ns) => setTabNamespace(activeTab.id, activeCluster, ns)}
+                      onOpenNew={(initialKind) => openNewResource(initialKind, p.id)}
+                      onOpenResource={(target) => openLinkedResource(target, p.id)}
+                      focus={paneActiveTab.focus}
+                      initialNamespace={paneActiveTab.namespace ?? ""}
+                      onNamespaceChange={(ns) => setTabNamespace(p.id, paneActiveTab.id, paneCluster, ns)}
                       detailDrawerWidth={layout.rightSidebarWidth}
                     />
                   ) : (
                     <LandingPage
-                      onOpenContext={(ctx) => openView(ctx, "overview")}
+                      onOpenContext={(ctx) => openView(ctx, "overview", { paneId: p.id })}
                       onOpenSettings={openSettings}
                       contextProfiles={contextProfiles}
                       kubeconfigFiles={kubeconfigFiles}
@@ -537,15 +811,17 @@ export function App() {
                     />
                   )}
                 </div>
-                {dockSessions.length > 0 && (
+                {p.dockSessions.length > 0 && (
                   <Dock
-                    sessions={dockSessions}
-                    activeId={activeDock}
-                    height={dockHeight}
-                    onActivate={setActiveDock}
-                    onCloseTab={closeDockTab}
-                    onClose={closeDock}
-                    onResize={setDockHeight}
+                    sessions={p.dockSessions}
+                    activeId={p.activeDockId}
+                    height={p.dockHeight}
+                    onActivate={(id) =>
+                      setDeck((d) => updatePane(d, p.id, (x) => ({ ...x, activeDockId: id })))
+                    }
+                    onCloseTab={(id) => closeDockTab(p.id, id)}
+                    onClose={() => closeDock(p.id)}
+                    onResize={(h) => setDeck((d) => updatePane(d, p.id, (x) => ({ ...x, dockHeight: h })))}
                   />
                 )}
               </>
@@ -553,20 +829,75 @@ export function App() {
           </>
         ) : (
           <LandingPage
-            onOpenContext={(ctx) => openView(ctx, "overview")}
+            onOpenContext={(ctx) => openView(ctx, "overview", { paneId: p.id })}
             onOpenSettings={openSettings}
             contextProfiles={contextProfiles}
             kubeconfigFiles={kubeconfigFiles}
             contextOrder={contextOrder}
           />
         )}
+      </section>
+    );
+  }
+
+  const anyCluster = clusters.length > 0;
+
+  return (
+    <div
+      className={`cat-app${anyCluster ? "" : " cat-app--no-cluster"}`}
+      style={anyCluster ? { gridTemplateColumns: `75px ${sidebarWidth}px 1fr` } : undefined}
+    >
+      <ClusterHotbar
+        openContext={activeCluster}
+        onOpenContext={(ctx) => openView(ctx, "overview")}
+        theme={theme}
+        onToggleTheme={toggleThemeMode}
+        onOpenSettings={openSettings}
+        contextProfiles={contextProfiles}
+        kubeconfigFiles={kubeconfigFiles}
+        contextOrder={contextOrder}
+      />
+      {anyCluster && (
+        <Sidebar
+          clusters={clusters}
+          activeCluster={activeCluster}
+          activeKind={activeKind}
+          activeCrd={activeTab?.crd ?? null}
+          onSelect={(c, k) => openView(c, k)}
+          onSelectCrd={(c, crd) => openCrdView(c, crd)}
+          contextProfiles={contextProfiles}
+          width={sidebarWidth}
+          onResize={setSidebarWidth}
+        />
+      )}
+      <div className="cat-main">
+        {split ? (
+          <div className="cat-deck" ref={deckElRef}>
+            {renderPane(deck.panes[0], 0)}
+            <div
+              className={`cat-pane-divider${dividerDragging ? " cat-pane-divider--dragging" : ""}`}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize panes"
+              onMouseDown={startDividerDrag}
+              onDoubleClick={() => setDeck((d) => setRatio(d, 0.5))}
+            />
+            {renderPane(deck.panes[1], 1)}
+          </div>
+        ) : (
+          renderPane(deck.panes[0], 0)
+        )}
       </div>
       <StatusBar
-        activeCluster={activeCluster}
+        panes={deck.panes.map((p, i) => ({
+          context: activeTabOf(p)?.cluster ?? null,
+          focused: p.id === deck.focusedPaneId,
+          side: i === 0 ? ("port" as const) : ("starboard" as const),
+        }))}
         activeLabel={
           activeTab ? (activeTab.crd ? activeTab.crd.kind : RESOURCE_LABELS[activeKind]) : undefined
         }
-        tabCount={tabs.length}
+        tabCount={pane.tabs.length}
       />
       <CommandPalette
         open={paletteOpen}

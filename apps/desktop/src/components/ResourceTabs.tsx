@@ -27,6 +27,7 @@ export function ResourceTabs({
   onCloseOthers,
   onCloseToRight,
   onCloseAll,
+  trailing,
 }: {
   tabs: TabDescriptor[];
   activeId: number | null;
@@ -35,6 +36,8 @@ export function ResourceTabs({
   onCloseOthers: (id: number) => void;
   onCloseToRight: (id: number) => void;
   onCloseAll: () => void;
+  /** Optional controls pinned to the right edge of the strip (e.g. split toggle). */
+  trailing?: React.ReactNode;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
 
@@ -104,6 +107,7 @@ export function ResourceTabs({
           </ContextMenu>
         );
       })}
+      {trailing && <div className="cat-ctabs__trailing">{trailing}</div>}
     </div>
   );
 }

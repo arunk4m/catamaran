@@ -215,6 +215,46 @@ export function saveContextOrder(order: string[]): void {
   }
 }
 
+const DECK_KEY = "catamaran.deck";
+
+/** Persisted split-screen deck layout: split on/off, pane ratio, linked nav. */
+export interface DeckLayoutSettings {
+  split: boolean;
+  ratio: number;
+  linked: boolean;
+}
+
+export const DEFAULT_DECK_LAYOUT: DeckLayoutSettings = { split: false, ratio: 0.5, linked: false };
+
+function boundedRatio(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0.2, Math.min(0.8, value))
+    : DEFAULT_DECK_LAYOUT.ratio;
+}
+
+export function loadDeckLayout(): DeckLayoutSettings {
+  try {
+    const raw = stored(DECK_KEY);
+    if (!raw) return { ...DEFAULT_DECK_LAYOUT };
+    const value = JSON.parse(raw) as Partial<DeckLayoutSettings>;
+    return {
+      split: value.split === true,
+      ratio: boundedRatio(value.ratio),
+      linked: value.linked === true,
+    };
+  } catch {
+    return { ...DEFAULT_DECK_LAYOUT };
+  }
+}
+
+export function saveDeckLayout(layout: DeckLayoutSettings): void {
+  try {
+    localStorage.setItem(DECK_KEY, JSON.stringify(layout));
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
 /** Which release channel the in-app updater follows. */
 export type UpdateChannel = "stable" | "dev";
 
