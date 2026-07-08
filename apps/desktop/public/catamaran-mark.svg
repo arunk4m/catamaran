@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 1024 1024" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Catamaran</title>
+  <desc id="desc">Catamaran app favicon: a twin-hulled sailboat on a deep indigo field.</desc>
+  <defs>
+    <linearGradient id="cf-bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0E1228"/>
+      <stop offset="0.55" stop-color="#171D45"/>
+      <stop offset="1" stop-color="#262E6B"/>
+    </linearGradient>
+    <linearGradient id="cf-sailMain" x1="512" y1="140" x2="512" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8E9FF"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="cf-hull" x1="512" y1="640" x2="512" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8A75"/>
+      <stop offset="1" stop-color="#F4573F"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#cf-bg)"/>
+  <path d="M542 156 C 692 330 762 478 776 620 L542 620 Z" fill="url(#cf-sailMain)"/>
+  <path d="M494 316 C 388 418 330 520 304 620 L494 620 Z" fill="#8FD8FD" opacity="0.92"/>
+  <rect x="505" y="138" width="26" height="530" rx="13" fill="#EAF7FF"/>
+  <rect x="212" y="642" width="600" height="42" rx="21" fill="url(#cf-hull)"/>
+  <path d="M184 732 L440 732 C440 802 386 848 312 848 C238 848 184 802 184 732 Z" fill="url(#cf-hull)"/>
+  <path d="M584 732 L840 732 C840 802 786 848 712 848 C638 848 584 802 584 732 Z" fill="url(#cf-hull)"/>
+</svg>

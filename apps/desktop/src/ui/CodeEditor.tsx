@@ -1,0 +1,340 @@
+import React, { useEffect, useRef } from "react";
+import { EditorState } from "@codemirror/state";
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  drawSelection,
+  dropCursor,
+} from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import {
+  syntaxHighlighting,
+  HighlightStyle,
+  indentOnInput,
+  bracketMatching,
+  foldGutter,
+  foldKeymap,
+} from "@codemirror/language";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { yaml } from "@codemirror/lang-yaml";
+import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
+import { autocompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import { parseDocument } from "yaml";
+import { tags as t } from "@lezer/highlight";
+import type { SchemaBundle } from "../lib/schema";
+import { extractApiVersionKind, pathAtCursor, fieldCompletions, valueCompletions } from "../lib/schemaComplete";
+
+/** Parse YAML and return syntax errors/warnings as diagnostics. Pure + tested. */
+export function yamlDiagnostics(text: string): Diagnostic[] {
+  const len = text.length;
+  if (!text.trim()) return [];
+  const clamp = (n: number) => Math.max(0, Math.min(n, len));
+  try {
+    const doc = parseDocument(text, { prettyErrors: false });
+    const asDiag = (issue: { pos?: [number, number, number?]; message: string }, severity: "error" | "warning"): Diagnostic => {
+      const [from, to] = issue.pos ?? [0, 1];
+      return { from: clamp(from), to: Math.max(clamp(to), clamp(from) + 1), severity, message: issue.message };
+    };
+    return [
+      ...doc.errors.map((e) => asDiag(e, "error")),
+      ...doc.warnings.map((w) => asDiag(w, "warning")),
+    ];
+  } catch (e) {
+    return [{ from: 0, to: len, severity: "error", message: String(e) }];
+  }
+}
+
+/** Split a k8s field path ("spec.template.spec.containers[0].image") into
+ *  getIn segments (["spec","template",…,"containers",0,"image"]). */
+function fieldSegments(path: string): (string | number)[] {
+  const segs: (string | number)[] = [];
+  for (const part of path.split(".")) {
+    const name = part.replace(/\[\d+\]/g, "");
+    if (name) segs.push(name);
+    for (const m of part.matchAll(/\[(\d+)\]/g)) segs.push(Number(m[1]));
+  }
+  return segs;
+}
+
+/** Field paths mentioned in a k8s validation message (unknown field / invalid value). */
+function extractFieldPaths(message: string): string[] {
+  const paths = new Set<string>();
+  for (const m of message.matchAll(/unknown field "([^"]+)"/g)) paths.add(m[1]);
+  for (const m of message.matchAll(
+    /\b([a-zA-Z_][\w-]*(?:\.[\w-]+|\[\d+\])*)\s*:\s*(?:Invalid value|Required value|Unsupported value|Forbidden|Duplicate value|Too long)/g,
+  )) {
+    paths.add(m[1]);
+  }
+  return [...paths];
+}
+
+/**
+ * Map Kubernetes validation messages (from server-side dry-run) onto editor
+ * ranges. Positions each message at the offending field when it can be located
+ * in the YAML, else at the top of the document — so the error is always shown.
+ * Pure + tested.
+ */
+export function k8sDiagnostics(text: string, messages: string[]): Diagnostic[] {
+  if (!messages.length || !text.trim()) return [];
+  const len = text.length;
+  let doc: ReturnType<typeof parseDocument> | null = null;
+  try {
+    doc = parseDocument(text);
+  } catch {
+    doc = null;
+  }
+  const topTo = Math.max(1, text.indexOf("\n") === -1 ? len : text.indexOf("\n"));
+  const diagnostics: Diagnostic[] = [];
+  for (const message of messages) {
+    const ranges = doc
+      ? extractFieldPaths(message)
+          .map((p) => {
+            const node = doc!.getIn(fieldSegments(p), true) as { range?: [number, number] } | undefined;
+            return node?.range ? ([node.range[0], node.range[1]] as [number, number]) : null;
+          })
+          .filter((r): r is [number, number] => !!r)
+      : [];
+    if (ranges.length) {
+      for (const [from, to] of ranges) {
+        diagnostics.push({ from, to: Math.max(to, from + 1), severity: "error", message });
+      }
+    } else {
+      diagnostics.push({ from: 0, to: topTo, severity: "error", message });
+    }
+  }
+  return diagnostics;
+}
+
+/**
+ * Syntax colours, sourced from CSS tokens so the editor tracks the app theme
+ * (light/dark) automatically. Keys are on-brand teal, the most scannable cue in
+ * a manifest.
+ */
+const highlightStyle = HighlightStyle.define([
+  { tag: [t.definition(t.propertyName), t.propertyName, t.labelName], color: "var(--cat-syntax-key)" },
+  { tag: [t.string, t.special(t.string)], color: "var(--cat-syntax-string)" },
+  { tag: [t.number, t.integer, t.float], color: "var(--cat-syntax-number)" },
+  { tag: [t.bool, t.null, t.keyword, t.atom], color: "var(--cat-syntax-bool)" },
+  { tag: [t.comment, t.lineComment, t.blockComment], color: "var(--cat-syntax-comment)", fontStyle: "italic" },
+  { tag: [t.meta, t.punctuation, t.separator], color: "var(--cat-color-text-muted)" },
+]);
+
+/** Editor chrome, themed from CSS tokens (so light/dark just works). */
+function editorTheme(minHeight: number, maxHeight: number, fill: boolean) {
+  return EditorView.theme({
+    "&": {
+      color: "var(--cat-color-text)",
+      backgroundColor: "var(--cat-color-bg)",
+      fontSize: "12px",
+      border: "1px solid var(--cat-color-border)",
+      borderRadius: "var(--cat-radius-md)",
+      // `fill` makes the editor take its container's full height (scrolling
+      // internally); otherwise it grows with content up to `maxHeight`.
+      ...(fill ? { height: "100%" } : { maxHeight: `${maxHeight}px` }),
+    },
+    "&.cm-focused": { outline: "none", borderColor: "var(--cat-color-accent)" },
+    ".cm-scroller": { fontFamily: "var(--cat-font-mono)", lineHeight: "1.55", overflow: "auto" },
+    ".cm-content": { minHeight: fill ? "0" : `${minHeight}px`, caretColor: "var(--cat-color-accent)" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--cat-color-accent)" },
+    ".cm-gutters": {
+      backgroundColor: "var(--cat-color-surface)",
+      color: "var(--cat-color-text-muted)",
+      border: "none",
+      borderRight: "1px solid var(--cat-color-border-faint)",
+    },
+    ".cm-activeLineGutter": { backgroundColor: "var(--cat-color-surface-alt)", color: "var(--cat-color-text)" },
+    ".cm-activeLine": { backgroundColor: "rgba(127, 140, 150, 0.08)" },
+    ".cm-foldPlaceholder": {
+      backgroundColor: "var(--cat-color-surface-alt)",
+      border: "none",
+      color: "var(--cat-color-text-muted)",
+    },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
+      backgroundColor: "rgba(0, 167, 160, 0.25)",
+    },
+    ".cm-selectionMatch": { backgroundColor: "rgba(0, 167, 160, 0.18)" },
+    ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
+      backgroundColor: "rgba(0, 167, 160, 0.22)",
+      outline: "1px solid var(--cat-color-accent)",
+    },
+    ".cm-panels": { backgroundColor: "var(--cat-color-surface)", color: "var(--cat-color-text)" },
+    ".cm-searchMatch": { backgroundColor: "rgba(210, 153, 34, 0.3)" },
+    ".cm-tooltip.cm-tooltip-lint": {
+      backgroundColor: "var(--cat-color-surface)",
+      border: "1px solid var(--cat-color-border)",
+      borderRadius: "var(--cat-radius-md)",
+      color: "var(--cat-color-text)",
+    },
+    ".cm-diagnostic": { padding: "3px 8px" },
+    ".cm-lint-marker": { width: "0.9em", height: "0.9em" },
+  });
+}
+
+export interface CodeEditorProps {
+  value: string;
+  onChange?: (value: string) => void;
+  /** YAML language + syntax highlighting (default true). */
+  language?: "yaml" | "none";
+  readOnly?: boolean;
+  ariaLabel?: string;
+  minHeight?: number;
+  maxHeight?: number;
+  /** Fill the parent's height (scroll internally) instead of growing to content. */
+  fill?: boolean;
+  /**
+   * k8s-aware validation: given the YAML, resolve to server-side validation
+   * error messages (empty = valid). Wired to `k8s.validateManifest`. When set,
+   * the editor lints against the API server in addition to YAML syntax.
+   */
+  schemaValidate?: (yaml: string) => Promise<string[]>;
+  /**
+   * k8s field autocomplete: resolve the OpenAPI schema for a kind (wired to
+   * `k8s.openApiSchema`). When set, the editor offers field-name and enum-value
+   * completions from the cluster's schema (CRDs included).
+   */
+  schemaSource?: (apiVersion: string, kind: string) => Promise<SchemaBundle | null>;
+}
+
+/**
+ * A real code editor (CodeMirror 6): line numbers, YAML syntax highlighting,
+ * fold gutter, bracket matching, undo/redo, and find (Cmd/Ctrl-F). Mounted
+ * imperatively and kept in sync with `value`; `onChange` fires on user edits.
+ */
+export function CodeEditor({
+  value,
+  onChange,
+  language = "yaml",
+  readOnly = false,
+  ariaLabel,
+  minHeight = 320,
+  maxHeight = 520,
+  fill = false,
+  schemaValidate,
+  schemaSource,
+}: CodeEditorProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  // Keep the latest onChange/validate without re-creating the editor on every render.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const validateRef = useRef(schemaValidate);
+  validateRef.current = schemaValidate;
+  const schemaSourceRef = useRef(schemaSource);
+  schemaSourceRef.current = schemaSource;
+  // Cache fetched schemas per (apiVersion, kind) for the editor's lifetime.
+  const schemaCacheRef = useRef(new Map<string, Promise<SchemaBundle | null>>());
+
+  useEffect(() => {
+    const parent = parentRef.current;
+    if (!parent) return;
+
+    const extensions = [
+      lineNumbers(),
+      highlightActiveLineGutter(),
+      highlightActiveLine(),
+      foldGutter(),
+      history(),
+      drawSelection(),
+      dropCursor(),
+      indentOnInput(),
+      bracketMatching(),
+      highlightSelectionMatches(),
+      keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...foldKeymap, indentWithTab]),
+      editorTheme(minHeight, maxHeight, fill),
+      syntaxHighlighting(highlightStyle),
+      EditorView.editable.of(!readOnly),
+      EditorState.readOnly.of(readOnly),
+      EditorView.updateListener.of((u) => {
+        if (u.docChanged) onChangeRef.current?.(u.state.doc.toString());
+      }),
+    ];
+    if (language === "yaml") {
+      // Lint YAML syntax first (local, instant); if it parses, validate against
+      // the API server (debounced via the linter delay) for k8s-aware errors.
+      const yamlLinter = linter(
+        async (view) => {
+          const text = view.state.doc.toString();
+          const syntax = yamlDiagnostics(text);
+          if (syntax.length) return syntax;
+          const validate = validateRef.current;
+          if (!validate || !text.trim()) return [];
+          try {
+            return k8sDiagnostics(text, await validate(text));
+          } catch {
+            return [];
+          }
+        },
+        { delay: 500 },
+      );
+      extensions.push(yaml(), yamlLinter, lintGutter());
+
+      // k8s field/value autocomplete from the cluster's OpenAPI schema.
+      const completionSource = async (ctx: CompletionContext): Promise<CompletionResult | null> => {
+        const provide = schemaSourceRef.current;
+        if (!provide) return null;
+        const text = ctx.state.doc.toString();
+        const kv = extractApiVersionKind(text);
+        if (!kv) return null;
+        const cacheKey = `${kv.apiVersion}\n${kv.kind}`;
+        let bundle = schemaCacheRef.current.get(cacheKey);
+        if (!bundle) {
+          bundle = provide(kv.apiVersion, kv.kind).catch(() => null);
+          schemaCacheRef.current.set(cacheKey, bundle);
+        }
+        const schema = await bundle;
+        if (!schema?.key) return null;
+
+        const { path, onValue, valueKey } = pathAtCursor(text, ctx.pos);
+        const items =
+          onValue && valueKey ? valueCompletions(schema, path, valueKey) : fieldCompletions(schema, path);
+        if (!items.length) return null;
+
+        const word = ctx.matchBefore(/[\w.-]*/);
+        if (word?.from === word?.to && !ctx.explicit) return null; // don't pop on empty unless invoked
+        const from = word ? word.from : ctx.pos;
+        const lineEnd = text.indexOf("\n", ctx.pos);
+        const rest = text.slice(ctx.pos, lineEnd === -1 ? undefined : lineEnd);
+        const addColon = !onValue && !rest.includes(":");
+        return {
+          from,
+          options: items.map((it) => ({
+            label: it.label,
+            type: onValue ? "enum" : "property",
+            detail: it.detail,
+            info: it.info,
+            apply: !onValue && addColon ? `${it.label}: ` : it.label,
+          })),
+        };
+      };
+      extensions.push(autocompletion({ override: [completionSource] }));
+    }
+    if (ariaLabel) extensions.push(EditorView.contentAttributes.of({ "aria-label": ariaLabel }));
+
+    const view = new EditorView({
+      state: EditorState.create({ doc: value, extensions }),
+      parent,
+    });
+    viewRef.current = view;
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+    // Re-create only when structural options change, not on every value/onChange.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly, language, ariaLabel, minHeight, maxHeight, fill]);
+
+  // Push external value changes into the editor (e.g. after Reset or reload).
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (value !== current) {
+      view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+    }
+  }, [value]);
+
+  return <div ref={parentRef} className="cat-editor" />;
+}

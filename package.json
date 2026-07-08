@@ -1,0 +1,11 @@
+{
+  "name": "catamaran-tauri",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @catamaran/desktop tauri dev",
+    "tauri": "pnpm --filter @catamaran/desktop tauri",
+    "build": "pnpm --filter @catamaran/desktop build",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": { "turbo": "^2.0.0" }
+}

@@ -1,0 +1,15 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node / frontend
+node_modules
+apps/desktop/dist
+apps/desktop/coverage
+
+# SDD scratch
+.superpowers/
+docs/superpowers/
+
+# OS
+.DS_Store

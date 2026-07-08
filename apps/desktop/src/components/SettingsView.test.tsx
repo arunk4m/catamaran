@@ -1,0 +1,329 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SettingsView } from "./SettingsView";
+import { DEFAULT_WORKSPACE_LAYOUT } from "../lib/settings";
+
+const fileMocks = vi.hoisted(() => ({
+  pickKubeconfigFiles: vi.fn(),
+  savePastedKubeconfig: vi.fn(),
+}));
+
+vi.mock("../lib/files", () => fileMocks);
+
+const updaterMocks = vi.hoisted(() => ({
+  checkForUpdate: vi.fn(),
+  installUpdate: vi.fn(),
+}));
+vi.mock("../lib/updater", () => updaterMocks);
+
+const transportMocks = vi.hoisted(() => ({
+  appVersion: vi.fn(async () => "0.1.0"),
+  relaunchApp: vi.fn(async () => {}),
+}));
+vi.mock("../transport/transport", () => transportMocks);
+
+vi.mock("../lib/clusters", () => ({
+  listContexts: () =>
+    Promise.resolve({
+      contexts: [
+        { name: "prod-eu", cluster: "production", server: "https://prod.example", isCurrent: true },
+        { name: "staging", cluster: "staging", server: "https://staging.example", isCurrent: false },
+      ],
+    }),
+}));
+
+describe("SettingsView", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("separates settings and edits context identity", async () => {
+    const onContextProfilesChange = vi.fn();
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={onContextProfilesChange}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Choose a palette and display mode. Changes apply immediately.")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: /Contexts/ }));
+    const displayName = await screen.findByRole("textbox", { name: "Display name for prod-eu" });
+    fireEvent.change(displayName, { target: { value: "Production Europe" } });
+    expect(onContextProfilesChange).toHaveBeenCalledWith({
+      "prod-eu": { displayName: "Production Europe" },
+    });
+  });
+
+  it("accepts a custom logo URL", async () => {
+    const onContextProfilesChange = vi.fn();
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{ "prod-eu": { logo: "custom" } }}
+        onContextProfilesChange={onContextProfilesChange}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Contexts/ }));
+    const url = await screen.findByRole("textbox", { name: "Custom logo URL for prod-eu" });
+    fireEvent.change(url, { target: { value: "https://example.com/logo.png" } });
+    expect(onContextProfilesChange).toHaveBeenCalledWith({
+      "prod-eu": { logo: "custom", logoUrl: "https://example.com/logo.png" },
+    });
+  });
+
+  it("moves contexts in the persisted order", async () => {
+    const onContextOrderChange = vi.fn();
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={onContextOrderChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Contexts/ }));
+    const moveDown = await screen.findByRole("button", { name: "Move prod-eu down" });
+    fireEvent.click(moveDown);
+    expect(onContextOrderChange).toHaveBeenCalledWith(["staging", "prod-eu"]);
+  });
+
+  it("reorders contexts using pointer dragging on the grip", async () => {
+    const onContextOrderChange = vi.fn();
+    const { container } = render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={onContextOrderChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Contexts/ }));
+    await screen.findByText("Context identity");
+    const rows = container.querySelectorAll<HTMLButtonElement>(".cat-context-manager__list > div > button");
+    const grip = rows[0].querySelector<HTMLElement>(".cat-context-manager__grip")!;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => rows[1]),
+    });
+    fireEvent.pointerDown(grip, { pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(grip, { pointerId: 1, clientX: 10, clientY: 50 });
+    fireEvent.pointerUp(grip, { pointerId: 1, clientX: 10, clientY: 50 });
+    expect(onContextOrderChange).toHaveBeenCalledWith(["staging", "prod-eu"]);
+    Reflect.deleteProperty(document, "elementFromPoint");
+  });
+
+  it("saves and adds a pasted kubeconfig", async () => {
+    fileMocks.savePastedKubeconfig.mockResolvedValue("/app/kubeconfigs/team.yaml");
+    const onKubeconfigFilesChange = vi.fn();
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={onKubeconfigFilesChange}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Contexts/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Paste" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Pasted kubeconfig name" }), {
+      target: { value: "Team" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Kubeconfig YAML" }), {
+      target: { value: "apiVersion: v1\nkind: Config\ncontexts: []" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add kubeconfig" }));
+    expect(fileMocks.savePastedKubeconfig).toHaveBeenCalledWith(
+      "apiVersion: v1\nkind: Config\ncontexts: []",
+      "Team",
+    );
+    await waitFor(() =>
+      expect(onKubeconfigFilesChange).toHaveBeenCalledWith(["/app/kubeconfigs/team.yaml"]),
+    );
+  });
+
+  it("checks for updates and reports up to date", async () => {
+    updaterMocks.checkForUpdate.mockResolvedValue(null);
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Updates/ }));
+    expect(await screen.findByText("0.1.0")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    expect(await screen.findByText(/up to date/i)).toBeDefined();
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledWith("stable");
+  });
+
+  it("opens directly on the section named by initialSection", async () => {
+    updaterMocks.checkForUpdate.mockResolvedValue(null);
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+        initialSection="updates"
+      />,
+    );
+    // The Updates pane is shown without clicking the nav first.
+    expect(await screen.findByRole("button", { name: "Check for updates" })).toBeDefined();
+  });
+
+  it("checks the dev channel when selected and persists the choice", async () => {
+    updaterMocks.checkForUpdate.mockResolvedValue(null);
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Updates/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Dev\b/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    await waitFor(() => expect(updaterMocks.checkForUpdate).toHaveBeenCalledWith("dev"));
+    expect(localStorage.getItem("catamaran.updateChannel")).toBe("dev");
+  });
+
+  it("downloads an available update and offers a restart", async () => {
+    updaterMocks.checkForUpdate.mockResolvedValue({
+      version: "0.2.0",
+      currentVersion: "0.1.0",
+      notes: "New things",
+    });
+    updaterMocks.installUpdate.mockImplementation(
+      async (_channel: string, onProgress?: (pct: number | null) => void) => {
+        onProgress?.(100);
+      },
+    );
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Updates/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
+    expect(await screen.findByText(/0\.2\.0/)).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: /Download & install/ }));
+    await waitFor(() =>
+      expect(updaterMocks.installUpdate).toHaveBeenCalledWith("stable", expect.any(Function)),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Restart catamaran/ }));
+    await waitFor(() => expect(transportMocks.relaunchApp).toHaveBeenCalledTimes(1));
+  });
+
+  it("surfaces update check failures", async () => {
+    updaterMocks.checkForUpdate.mockRejectedValue(new Error("endpoint unreachable"));
+    render(
+      <SettingsView
+        theme={{ name: "slate", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Updates/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
+    expect(await screen.findByText(/endpoint unreachable/)).toBeDefined();
+  });
+});

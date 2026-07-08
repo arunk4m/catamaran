@@ -1,0 +1,87 @@
+import React from "react";
+import { CircleStop, Copy } from "lucide-react";
+import { Table, Badge, Button, type Column } from "../ui";
+import { useForwards } from "./ForwardsIndicator";
+import { stopPortForward, type ActiveForward } from "../lib/forward";
+
+/**
+ * Network overview of every active port-forward across all connected clusters.
+ * Backed by the in-memory forwards store, so it updates live as forwards start,
+ * stop, or drop on their own.
+ */
+export function PortForwardsView({ context }: { context?: string }) {
+  const all = useForwards();
+  // Show this cluster's forwards first, but list every cluster for a true
+  // overview (the store is global).
+  const forwards = context
+    ? [...all].sort((a, b) => Number(b.context === context) - Number(a.context === context))
+    : all;
+
+  const columns: Column<ActiveForward>[] = [
+    {
+      key: "name",
+      header: "Name",
+      render: (f) => <span className="cat-mono">{f.name}</span>,
+    },
+    {
+      key: "kind",
+      header: "Kind",
+      render: (f) => <Badge variant="info">{f.kind}</Badge>,
+    },
+    { key: "namespace", header: "Namespace", render: (f) => f.namespace || "—" },
+    { key: "context", header: "Cluster", render: (f) => f.context },
+    {
+      key: "local",
+      header: "Local",
+      render: (f) => (
+        <a
+          className="cat-mono text-primary hover:underline"
+          href={`http://localhost:${f.localPort}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          localhost:{f.localPort}
+        </a>
+      ),
+    },
+    { key: "remote", header: "Remote", render: (f) => <span className="cat-mono">{f.remotePort}</span> },
+    {
+      key: "actions",
+      header: "",
+      render: (f) => (
+        <div className="flex justify-end gap-2">
+          <Button
+            variant="ghost"
+            onClick={() => void navigator.clipboard?.writeText(`localhost:${f.localPort}`)}
+          >
+            <Copy data-icon="inline-start" />
+            Copy
+          </Button>
+          <Button variant="danger" onClick={() => void stopPortForward(f.id)}>
+            <CircleStop data-icon="inline-start" />
+            Stop
+          </Button>
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 text-sm">
+        <span className="font-medium">Port Forwards</span>
+        <Badge variant="info">{forwards.length}</Badge>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        {forwards.length === 0 ? (
+          <div className="p-8 text-center text-sm text-muted-foreground">
+            No active port forwards. Open a Pod or Service and use the <strong>Forward</strong> action
+            to start one.
+          </div>
+        ) : (
+          <Table columns={columns} data={forwards} getRowKey={(f) => String(f.id)} />
+        )}
+      </div>
+    </div>
+  );
+}

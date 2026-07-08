@@ -1,0 +1,43 @@
+[package]
+name = "catamaran-desktop"
+version = "0.1.1"
+description = "catamaran Kubernetes desktop workspace"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "catamaran_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# The executable is named `catamaran` (not the crate name) — it's what macOS
+# shows in the dock for dev builds and what the bundles ship.
+[[bin]]
+name = "catamaran"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+catamaran-capability = { path = "../../../crates/capability" }
+catamaran-mcp = { path = "../../../crates/mcp" }
+catamaran-kube = { path = "../../../crates/kube" }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros"] }
+
+# Auto-update is desktop-only (mobile stores handle their own updates).
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+# GUI-launched apps on macOS/Linux get launchd's minimal PATH, so kubeconfig
+# exec plugins (kubectl, krew plugins, cloud CLIs) can't be found. This
+# resolves the user's login-shell PATH at startup. No-op on Windows.
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

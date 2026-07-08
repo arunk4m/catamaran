@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="200" viewBox="0 0 760 200" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Catamaran</title>
+  <desc id="desc">Catamaran logotype: the twin-hull sailboat mark beside the product name.</desc>
+  <defs>
+    <linearGradient id="cl-sailMain" x1="100" y1="20" x2="100" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8E9FF"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="cl-hull" x1="100" y1="115" x2="100" y2="160" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8A75"/>
+      <stop offset="1" stop-color="#F4573F"/>
+    </linearGradient>
+    <linearGradient id="cl-word" x1="220" y1="100" x2="740" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="0.55" stop-color="#7C8CF8"/>
+      <stop offset="1" stop-color="#FF8A75"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(10 10) scale(0.176)">
+    <path d="M542 156 C 692 330 762 478 776 620 L542 620 Z" fill="url(#cl-sailMain)"/>
+    <path d="M494 316 C 388 418 330 520 304 620 L494 620 Z" fill="#8FD8FD" opacity="0.92"/>
+    <rect x="505" y="138" width="26" height="530" rx="13" fill="#EAF7FF"/>
+    <rect x="212" y="642" width="600" height="42" rx="21" fill="url(#cl-hull)"/>
+    <path d="M184 732 L440 732 C440 802 386 848 312 848 C238 848 184 802 184 732 Z" fill="url(#cl-hull)"/>
+    <path d="M584 732 L840 732 C840 802 786 848 712 848 C638 848 584 802 584 732 Z" fill="url(#cl-hull)"/>
+  </g>
+  <text x="212" y="128" font-family="-apple-system, 'Segoe UI', system-ui, sans-serif" font-size="88" font-weight="700" letter-spacing="1" fill="url(#cl-word)">Catamaran</text>
+</svg>

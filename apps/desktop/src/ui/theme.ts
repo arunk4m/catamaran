@@ -1,0 +1,93 @@
+export type ThemeMode = "dark" | "light" | "system";
+export type ThemeName = "dusk" | "ember" | "mono";
+
+export interface Theme {
+  name: ThemeName;
+  mode: ThemeMode;
+}
+
+export interface ThemeOption {
+  id: ThemeName;
+  name: string;
+  description: string;
+  preview: string;
+}
+
+export const THEME_OPTIONS: ThemeOption[] = [
+  {
+    id: "dusk",
+    name: "Dusk",
+    description: "Indigo night sea, coral trim",
+    preview: "#7d8cf8",
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    description: "Warm charcoal and amber",
+    preview: "#f5a524",
+  },
+  {
+    id: "mono",
+    name: "Mono",
+    description: "Monochrome high contrast",
+    preview: "#8b949e",
+  },
+];
+
+const KEY = "catamaran.theme";
+const DEFAULT_THEME: Theme = { name: "dusk", mode: "dark" };
+
+function isThemeName(value: unknown): value is ThemeName {
+  return typeof value === "string" && THEME_OPTIONS.some((theme) => theme.id === value);
+}
+
+function normalizeThemeName(value: unknown): ThemeName {
+  if (isThemeName(value)) return value;
+  return DEFAULT_THEME.name;
+}
+
+function isThemeMode(value: unknown): value is ThemeMode {
+  return value === "dark" || value === "light" || value === "system";
+}
+
+export function resolvedThemeMode(mode: ThemeMode): "dark" | "light" {
+  if (mode !== "system") return mode;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+/** Read the persisted theme (defaults to Dusk, dark). */
+export function getInitialTheme(): Theme {
+  try {
+    const stored = localStorage.getItem(KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<Theme>;
+      return {
+        name: normalizeThemeName(parsed.name),
+        mode: isThemeMode(parsed.mode) ? parsed.mode : DEFAULT_THEME.mode,
+      };
+    }
+  } catch {
+    /* storage unavailable, use the default below */
+  }
+  return DEFAULT_THEME;
+}
+
+/** Apply a theme to the document root and persist it. */
+export function applyTheme(theme: Theme): void {
+  const root = document.documentElement;
+  const mode = resolvedThemeMode(theme.mode);
+
+  // Set both conventions: app CSS keys off data attributes, shadcn/Tailwind
+  // keys off the `dark` class. Keeping them in lockstep means one picker drives
+  // both design systems.
+  root.dataset.theme = theme.name;
+  root.dataset.themeMode = mode;
+  root.dataset.themePreference = theme.mode;
+  root.classList.toggle("dark", mode === "dark");
+  root.style.colorScheme = mode;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(theme));
+  } catch {
+    /* storage unavailable, theme still applied for this session */
+  }
+}

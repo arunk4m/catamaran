@@ -1,0 +1,582 @@
+import React, { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ClusterHotbar } from "./components/ClusterHotbar";
+import { ResourceTabs, type TabDescriptor } from "./components/ResourceTabs";
+import { Sidebar } from "./components/Sidebar";
+import {
+  ResourceBrowser,
+  K8S_KIND,
+  RESOURCE_LABELS,
+  type ResourceKind,
+} from "./components/ResourceBrowser";
+import { CustomResourceBrowser } from "./components/CustomResourceBrowser";
+import { ClusterOverview } from "./components/ClusterOverview";
+import { PortForwardsView } from "./components/PortForwardsView";
+import { HelmReleasesView } from "./components/HelmReleasesView";
+import { NewResourceEditor } from "./components/NewResourceEditor";
+import { EditResourceTab } from "./components/EditResourceTab";
+import { SettingsView } from "./components/SettingsView";
+import { CommandPalette } from "./components/CommandPalette";
+import { Toaster } from "./components/ui/sonner";
+import { Dock, type DockSession, type DockKind } from "./components/Dock";
+import { StatusBar } from "./components/StatusBar";
+import { LandingPage } from "./components/LandingPage";
+import { getInitialTheme, applyTheme, type Theme, type ThemeMode, type ThemeName } from "./ui";
+import type { CrdRef } from "./lib/crds";
+import type { ResourceTarget } from "./lib/resourceNavigation";
+import {
+  loadClusterNamespaces,
+  saveClusterNamespaces,
+  getDefaultNamespace,
+  setDefaultNamespace,
+  loadWorkspaceLayout,
+  saveWorkspaceLayout,
+  type WorkspaceLayoutSettings,
+  loadContextProfiles,
+  saveContextProfiles,
+  contextDisplayName,
+  type ContextProfiles,
+  loadKubeconfigFiles,
+  saveKubeconfigFiles,
+  loadContextOrder,
+  saveContextOrder,
+  orderContexts,
+  loadUpdateChannel,
+  loadMcpSettings,
+} from "./lib/settings";
+import { startMcpHttp } from "./lib/mcp";
+import { checkForUpdateAndNotify } from "./lib/updateNotifier";
+import { notify } from "./lib/notify";
+import type { SettingsSection } from "./components/SettingsView";
+
+interface ViewTab {
+  id: number;
+  cluster: string | null;
+  kind: ResourceKind;
+  /** Present when the tab is a custom-resource (CRD) view. */
+  crd?: CrdRef;
+  /** Deep-link target from global search (opens the resource's detail). */
+  focus?: { name: string; namespace: string | null; nonce: number };
+  /** For a "new resource" tab: the template kind to start from. */
+  create?: { initialKind?: string };
+  /** For an "edit resource" tab: the resource to preload and apply back. */
+  edit?: { kind: string; namespace: string | null; name: string };
+  /** Selected namespace filter (empty = all), preserved per tab. */
+  namespace?: string;
+}
+
+export function App() {
+  // Each tab is a (cluster, resource-kind) view, like browser tabs.
+  const [tabs, setTabs] = useState<ViewTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
+  const [layout, setLayout] = useState(loadWorkspaceLayout);
+  const [sidebarWidth, setSidebarWidth] = useState(layout.leftSidebarWidth);
+  const [contextProfiles, setContextProfiles] = useState(loadContextProfiles);
+  const [kubeconfigFiles, setKubeconfigFiles] = useState(loadKubeconfigFiles);
+  const [contextOrder, setContextOrder] = useState(loadContextOrder);
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // Last-used namespace per cluster (persisted across restarts).
+  const [clusterNs, setClusterNs] = useState<Record<string, string>>(loadClusterNamespaces);
+  // Global fallback namespace for clusters with no remembered selection.
+  const [defaultNs, setDefaultNs] = useState(getDefaultNamespace);
+  const tabIdRef = useRef(1);
+  const focusNonce = useRef(0);
+  // Mirror the active tab id into a ref so the (once-registered) Cmd+W menu
+  // event listener always sees the latest value without re-subscribing.
+  const activeTabIdRef = useRef<number | null>(null);
+  activeTabIdRef.current = activeTabId;
+  const tabsRef = useRef<ViewTab[]>([]);
+  tabsRef.current = tabs;
+  // Deep-link the Settings tab to a section (e.g. from the update toast). The
+  // nonce bumps to remount SettingsView at the requested section when asked.
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("appearance");
+  const [settingsSectionNonce, setSettingsSectionNonce] = useState(0);
+
+  // Persist per-cluster namespace whenever it changes.
+  useEffect(() => saveClusterNamespaces(clusterNs), [clusterNs]);
+
+  /** The namespace a new tab in `cluster` should start on. */
+  const namespaceFor = (cluster: string) => clusterNs[cluster] ?? defaultNs;
+
+  /** Update a tab's namespace filter and remember it as the cluster's default. */
+  function setTabNamespace(tabId: number, cluster: string, ns: string) {
+    setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, namespace: ns } : t)));
+    setClusterNs((m) => ({ ...m, [cluster]: ns }));
+  }
+
+  /** Change the saved default namespace (settings). */
+  function changeDefaultNamespace(ns: string) {
+    setDefaultNs(ns);
+    setDefaultNamespace(ns);
+  }
+
+  function changeWorkspaceLayout(next: WorkspaceLayoutSettings) {
+    setLayout(next);
+    setSidebarWidth(next.leftSidebarWidth);
+    saveWorkspaceLayout(next);
+  }
+
+  function changeContextProfiles(next: ContextProfiles) {
+    setContextProfiles(next);
+    saveContextProfiles(next);
+  }
+
+  function changeKubeconfigFiles(next: string[]) {
+    setKubeconfigFiles(next);
+    saveKubeconfigFiles(next);
+  }
+
+  function changeContextOrder(next: string[]) {
+    setContextOrder(next);
+    saveContextOrder(next);
+  }
+
+  useEffect(() => {
+    applyTheme(theme);
+    if (theme.mode !== "system") return;
+
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const syncSystemTheme = () => applyTheme(theme);
+    mediaQuery.addEventListener("change", syncSystemTheme);
+    return () => mediaQuery.removeEventListener("change", syncSystemTheme);
+  }, [theme]);
+
+  function setThemeMode(mode: ThemeMode) {
+    setTheme((current) => ({ ...current, mode }));
+  }
+
+  function setThemeName(name: ThemeName) {
+    setTheme((current) => ({ ...current, name }));
+  }
+
+  function toggleThemeMode() {
+    setTheme((current) => ({
+      ...current,
+      mode: current.mode === "dark" ? "light" : "dark",
+    }));
+  }
+
+  // Global Cmd/Ctrl-K opens the command palette.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // On macOS the native menu routes Cmd+W to a custom "Close" item (see
+  // src-tauri) which emits `close-active-tab`. Close the active tab here, and
+  // only fall back to closing the window when no tabs remain — mirroring
+  // browser-style tab behavior.
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    const unlistenPromise = listen("close-active-tab", () => {
+      const id = activeTabIdRef.current;
+      if (id != null) {
+        const closingLastTab = tabsRef.current.length === 1 && tabsRef.current[0]?.id === id;
+        closeView(id);
+        if (closingLastTab) void getCurrentWindow().close();
+      } else {
+        void getCurrentWindow().close();
+      }
+    }).catch(() => () => {});
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const activeCluster = activeTab?.cluster ?? null;
+  const activeKind: ResourceKind = activeTab?.kind ?? "pods";
+  const activeCrd = activeTab?.crd ?? null;
+  const clusters = orderContexts(
+    [...new Set(tabs.flatMap((t) => (t.cluster ? [t.cluster] : [])))].map((name) => ({ name })),
+    contextOrder,
+  ).map(({ name }) => name);
+
+  /** Open (or focus, if already open) a resource view for a cluster + kind. */
+  function openView(cluster: string, kind: ResourceKind) {
+    if (kind === "settings") {
+      openSettings();
+      return;
+    }
+    const existing = tabs.find((t) => t.cluster === cluster && t.kind === kind && !t.crd);
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const id = tabIdRef.current++;
+    setTabs((ts) => [...ts, { id, cluster, kind, namespace: namespaceFor(cluster) }]);
+    setActiveTabId(id);
+    setQuery("");
+  }
+
+  /** Open the single workspace-level Settings tab, optionally at a section. */
+  function openSettings(section?: SettingsSection) {
+    if (section) {
+      setSettingsInitialSection(section);
+      // Remount SettingsView so it opens at the requested section even if the
+      // tab is already open on another section.
+      setSettingsSectionNonce((n) => n + 1);
+    }
+    const existing = tabs.find((t) => t.kind === "settings" && !t.cluster);
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const id = tabIdRef.current++;
+    setTabs((ts) => [...ts, { id, cluster: null, kind: "settings" }]);
+    setActiveTabId(id);
+    setQuery("");
+  }
+  // Keep a stable handle to openSettings so the update-check effect's toast
+  // action always uses the current tab state, not a stale closure.
+  const openSettingsRef = useRef(openSettings);
+  openSettingsRef.current = openSettings;
+
+  // Automatically check for updates on startup and periodically, surfacing a
+  // small toast (with a link to the Updates section) when one is available —
+  // rather than only when the user opens Settings and clicks "check".
+  const notifiedVersionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const channel = loadUpdateChannel();
+    const run = () =>
+      void checkForUpdateAndNotify(
+        channel,
+        (update) => {
+          notifiedVersionRef.current = update.version;
+          notify.updateAvailable(update.version, () => openSettingsRef.current("updates"));
+        },
+        { alreadyNotified: (v) => notifiedVersionRef.current === v },
+      );
+    run();
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    const timer = setInterval(run, SIX_HOURS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Start the in-app MCP HTTP server on launch if the user left it enabled, so
+  // agents can connect without opening Settings first.
+  useEffect(() => {
+    const mcp = loadMcpSettings();
+    if (mcp.enabled) void startMcpHttp(mcp.port).catch(() => {});
+  }, []);
+
+  /** Open a resource's kind view and deep-link to its detail (from search). */
+  function openResource(kind: ResourceKind, namespace: string | null, name: string) {
+    if (!activeCluster) return;
+    const focus = { name, namespace, nonce: ++focusNonce.current };
+    // Filter the list to the resource's namespace so its row is present to focus.
+    const ns = namespace ?? "";
+    const existing = tabs.find((t) => t.cluster === activeCluster && t.kind === kind && !t.crd);
+    if (existing) {
+      setTabs((ts) => ts.map((t) => (t.id === existing.id ? { ...t, focus, namespace: ns } : t)));
+      setActiveTabId(existing.id);
+    } else {
+      const id = tabIdRef.current++;
+      setTabs((ts) => [...ts, { id, cluster: activeCluster, kind, focus, namespace: ns }]);
+      setActiveTabId(id);
+    }
+    setClusterNs((m) => ({ ...m, [activeCluster]: ns }));
+    setQuery("");
+  }
+
+  /** Resolve a canonical Kubernetes kind from a detail link to its product view. */
+  function openLinkedResource(target: ResourceTarget) {
+    const entry = Object.entries(K8S_KIND).find(([, k8sKind]) => k8sKind === target.kind);
+    if (!entry) return;
+    openResource(entry[0] as ResourceKind, target.namespace, target.name);
+  }
+
+  /** Open a fresh "new resource" editor tab, optionally seeded with a template. */
+  function openNewResource(initialKind?: string) {
+    if (!activeCluster) return;
+    const id = tabIdRef.current++;
+    setTabs((ts) => [...ts, { id, cluster: activeCluster, kind: "newresource", create: { initialKind } }]);
+    setActiveTabId(id);
+  }
+
+  /** Open (or focus) a full-tab editor preloaded with a resource's manifest. */
+  function openEditResource(kind: string, namespace: string | null, name: string) {
+    if (!activeCluster) return;
+    const existing = tabs.find(
+      (t) =>
+        t.kind === "editresource" &&
+        t.cluster === activeCluster &&
+        t.edit?.kind === kind &&
+        (t.edit?.namespace ?? null) === (namespace ?? null) &&
+        t.edit?.name === name,
+    );
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const id = tabIdRef.current++;
+    setTabs((ts) => [...ts, { id, cluster: activeCluster, kind: "editresource", edit: { kind, namespace, name } }]);
+    setActiveTabId(id);
+  }
+
+  /** Open (or focus) a custom-resource view for a cluster + CRD. */
+  function openCrdView(cluster: string, crd: CrdRef) {
+    const existing = tabs.find((t) => t.cluster === cluster && t.crd?.name === crd.name);
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const id = tabIdRef.current++;
+    setTabs((ts) => [...ts, { id, cluster, kind: "overview", crd }]);
+    setActiveTabId(id);
+    setQuery("");
+  }
+  function closeView(id: number) {
+    setTabs((ts) => {
+      const remaining = ts.filter((t) => t.id !== id);
+      setActiveTabId((a) => (a === id ? (remaining.at(-1)?.id ?? null) : a));
+      return remaining;
+    });
+  }
+  /** Close every tab except `id`, then focus it. */
+  function closeOtherViews(id: number) {
+    setTabs((ts) => ts.filter((t) => t.id === id));
+    setActiveTabId(id);
+  }
+  /** Close every tab to the right of `id`. */
+  function closeViewsToRight(id: number) {
+    setTabs((ts) => {
+      const idx = ts.findIndex((t) => t.id === id);
+      if (idx < 0) return ts;
+      const remaining = ts.slice(0, idx + 1);
+      setActiveTabId((a) => (remaining.some((t) => t.id === a) ? a : id));
+      return remaining;
+    });
+  }
+  function closeAllViews() {
+    setTabs([]);
+    setActiveTabId(null);
+  }
+
+  // Bottom dock state (terminals + logs as tabs).
+  const [dockSessions, setDockSessions] = useState<DockSession[]>([]);
+  const [activeDock, setActiveDock] = useState<number | null>(null);
+  const [dockHeight, setDockHeight] = useState(300);
+  const dockIdRef = useRef(1);
+
+  function openDock(
+    kind: DockKind,
+    s: {
+      context: string;
+      namespace: string;
+      pod?: string;
+      container?: string;
+      workload?: { kind: string; name: string };
+    },
+  ) {
+    const id = dockIdRef.current++;
+    setDockSessions((t) => [...t, { id, kind, ...s }]);
+    setActiveDock(id);
+  }
+  function closeDockTab(id: number) {
+    setDockSessions((t) => {
+      const remaining = t.filter((x) => x.id !== id);
+      setActiveDock((a) => (a === id ? (remaining.at(-1)?.id ?? null) : a));
+      return remaining;
+    });
+  }
+  function closeDock() {
+    setDockSessions([]);
+    setActiveDock(null);
+  }
+
+  const tabDescriptors: TabDescriptor[] = tabs.map((t) => ({
+    id: t.id,
+    label: t.edit
+      ? `edit: ${t.edit.kind}/${t.edit.name}`
+      : t.cluster
+        ? `${t.crd ? t.crd.kind : RESOURCE_LABELS[t.kind]} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
+        : RESOURCE_LABELS[t.kind],
+  }));
+
+  return (
+    <div
+      className={`cat-app${activeCluster ? "" : " cat-app--no-cluster"}`}
+      style={activeCluster ? { gridTemplateColumns: `75px ${sidebarWidth}px 1fr` } : undefined}
+    >
+      <ClusterHotbar
+        openContext={activeCluster}
+        onOpenContext={(ctx) => openView(ctx, "overview")}
+        theme={theme}
+        onToggleTheme={toggleThemeMode}
+        onOpenSettings={openSettings}
+        contextProfiles={contextProfiles}
+        kubeconfigFiles={kubeconfigFiles}
+        contextOrder={contextOrder}
+      />
+      {activeCluster && (
+        <Sidebar
+          clusters={clusters}
+          activeCluster={activeCluster}
+          activeKind={activeKind}
+          activeCrd={activeCrd}
+          onSelect={(c, k) => openView(c, k)}
+          onSelectCrd={(c, crd) => openCrdView(c, crd)}
+          contextProfiles={contextProfiles}
+          width={sidebarWidth}
+          onResize={setSidebarWidth}
+        />
+      )}
+      <div className="cat-main">
+        {tabs.length > 0 ? (
+          <>
+            <ResourceTabs
+              tabs={tabDescriptors}
+              activeId={activeTabId}
+              onActivate={setActiveTabId}
+              onClose={closeView}
+              onCloseOthers={closeOtherViews}
+              onCloseToRight={closeViewsToRight}
+              onCloseAll={closeAllViews}
+            />
+            {activeTab && (
+              <>
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+                  {activeKind === "settings" ? (
+                    <SettingsView
+                      key={`${activeTab.id}:${settingsSectionNonce}`}
+                      initialSection={settingsInitialSection}
+                      theme={theme}
+                      onThemeNameChange={setThemeName}
+                      onThemeModeChange={setThemeMode}
+                      defaultNamespace={defaultNs}
+                      onDefaultNamespaceChange={changeDefaultNamespace}
+                      layout={layout}
+                      onLayoutChange={changeWorkspaceLayout}
+                      contextProfiles={contextProfiles}
+                      onContextProfilesChange={changeContextProfiles}
+                      kubeconfigFiles={kubeconfigFiles}
+                      onKubeconfigFilesChange={changeKubeconfigFiles}
+                      contextOrder={contextOrder}
+                      onContextOrderChange={changeContextOrder}
+                    />
+                  ) : activeTab.crd && activeCluster ? (
+                    <CustomResourceBrowser
+                      key={activeTab.id}
+                      context={activeCluster}
+                      crd={activeTab.crd}
+                      query={query}
+                      onQueryChange={setQuery}
+                      detailDrawerWidth={layout.rightSidebarWidth}
+                    />
+                  ) : activeCluster && activeKind === "overview" ? (
+                    <div className="min-h-0 flex-1 overflow-auto p-3">
+                      <ClusterOverview
+                        key={activeTab.id}
+                        context={activeCluster}
+                        onOpenView={(kind) => openView(activeCluster, kind)}
+                      />
+                    </div>
+                  ) : activeCluster && activeKind === "portforwards" ? (
+                    <PortForwardsView key={activeTab.id} context={activeCluster} />
+                  ) : activeCluster && activeKind === "helmreleases" ? (
+                    <HelmReleasesView
+                      key={activeTab.id}
+                      context={activeCluster}
+                      detailDrawerWidth={layout.rightSidebarWidth}
+                    />
+                  ) : activeCluster && activeKind === "newresource" ? (
+                    <NewResourceEditor
+                      key={activeTab.id}
+                      context={activeCluster}
+                      initialKind={activeTab.create?.initialKind}
+                    />
+                  ) : activeCluster && activeKind === "editresource" && activeTab.edit ? (
+                    <EditResourceTab
+                      key={activeTab.id}
+                      context={activeCluster}
+                      kind={activeTab.edit.kind}
+                      namespace={activeTab.edit.namespace}
+                      name={activeTab.edit.name}
+                    />
+                  ) : activeCluster ? (
+                    <ResourceBrowser
+                      key={activeTab.id}
+                      context={activeCluster}
+                      kind={activeKind}
+                      query={query}
+                      onQueryChange={setQuery}
+                      onOpenTerminal={(s) => openDock("terminal", s)}
+                      onOpenLogs={(s) => openDock("logs", s)}
+                      onOpenEdit={openEditResource}
+                      onOpenWorkloadLogs={(s) =>
+                        openDock("logs", {
+                          context: s.context,
+                          namespace: s.namespace,
+                          workload: { kind: s.kind, name: s.name },
+                        })
+                      }
+                      onOpenNew={openNewResource}
+                      onOpenResource={openLinkedResource}
+                      focus={activeTab.focus}
+                      initialNamespace={activeTab.namespace ?? ""}
+                      onNamespaceChange={(ns) => setTabNamespace(activeTab.id, activeCluster, ns)}
+                      detailDrawerWidth={layout.rightSidebarWidth}
+                    />
+                  ) : (
+                    <LandingPage
+                      onOpenContext={(ctx) => openView(ctx, "overview")}
+                      onOpenSettings={openSettings}
+                      contextProfiles={contextProfiles}
+                      kubeconfigFiles={kubeconfigFiles}
+                      contextOrder={contextOrder}
+                    />
+                  )}
+                </div>
+                {dockSessions.length > 0 && (
+                  <Dock
+                    sessions={dockSessions}
+                    activeId={activeDock}
+                    height={dockHeight}
+                    onActivate={setActiveDock}
+                    onCloseTab={closeDockTab}
+                    onClose={closeDock}
+                    onResize={setDockHeight}
+                  />
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <LandingPage
+            onOpenContext={(ctx) => openView(ctx, "overview")}
+            onOpenSettings={openSettings}
+            contextProfiles={contextProfiles}
+            kubeconfigFiles={kubeconfigFiles}
+            contextOrder={contextOrder}
+          />
+        )}
+      </div>
+      <StatusBar
+        activeCluster={activeCluster}
+        activeLabel={
+          activeTab ? (activeTab.crd ? activeTab.crd.kind : RESOURCE_LABELS[activeKind]) : undefined
+        }
+        tabCount={tabs.length}
+      />
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        context={activeCluster}
+        onOpenView={(kind) => (kind === "settings" ? openSettings() : activeCluster && openView(activeCluster, kind))}
+        onOpenResource={openResource}
+        onOpenCrd={(crd) => activeCluster && openCrdView(activeCluster, crd)}
+      />
+      <Toaster position="top-right" richColors closeButton />
+    </div>
+  );
+}

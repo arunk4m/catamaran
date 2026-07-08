@@ -1,0 +1,78 @@
+name: CI
+
+# Run the test suites on every push/PR to dev or main so nothing lands red.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: frontend
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Unit tests with coverage
+        # Vitest enforces the 85% line-coverage floor (vitest.config.ts).
+        run: pnpm -r test
+
+  backend:
+    name: backend
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      # Tauri v2 system libraries needed to compile the desktop crate.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libssl-dev \
+            build-essential
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # tauri-build validates that frontendDist exists at compile time,
+      # so build the frontend before compiling the Rust workspace.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Backend tests with coverage
+        # The Tauri runtime shell (commands, event streams, process entry) only
+        # executes inside a running app/cluster, so it is excluded from the
+        # measurement. The floor is a ratchet: currently 55%, raise it toward
+        # 85% as cluster-bound integration tests land — never lower it.
+        run: >-
+          cargo llvm-cov --workspace --summary-only --fail-under-lines 55
+          --ignore-filename-regex 'apps/desktop/src-tauri/src/(lib|main|bridge|exec|files|forward|logs|watch)\.rs'

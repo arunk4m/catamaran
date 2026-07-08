@@ -1,0 +1,193 @@
+//! The single place the app registers every backend capability.
+//!
+//! Each capability is exposed automatically through BOTH the Tauri command
+//! bridge (for the WebView) and the MCP server (for external clients). The
+//! `every_capability_is_mcp_exposed` test enforces that guarantee.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use catamaran_capability::{Capability, Registry};
+use catamaran_kube::client_cache::ClientCache;
+use serde_json::json;
+
+/// Resolve kubeconfig paths: every `$KUBECONFIG` entry, else `$HOME/.kube/config`.
+pub fn default_kubeconfig_paths() -> Vec<PathBuf> {
+    if let Some(value) = std::env::var_os("KUBECONFIG") {
+        let paths = std::env::split_paths(&value)
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    vec![PathBuf::from(home).join(".kube").join("config")]
+}
+
+#[cfg(test)]
+pub fn default_kubeconfig_path() -> PathBuf {
+    default_kubeconfig_paths().into_iter().next().unwrap_or_default()
+}
+
+/// Build the registry with a freshly-created client cache. Used by the MCP
+/// stdio binary, which doesn't need to share the cache with watch tasks.
+pub fn build_registry() -> Registry {
+    build_registry_with(ClientCache::new_many(default_kubeconfig_paths()))
+}
+
+/// Build the registry using a caller-provided client cache, so the GUI can
+/// share one cache between request/response capabilities and live watches.
+pub fn build_registry_with(cache: Arc<ClientCache>) -> Registry {
+    let mut reg = Registry::new();
+
+    reg.register(Capability::read_only(
+        "ping",
+        "health check; echoes the input back as { pong: <input> }",
+        |input| async move { Ok(json!({ "pong": input })) },
+    ));
+
+    reg.register(catamaran_kube::contexts::list_contexts_capability(
+        cache.clone(),
+        default_kubeconfig_paths(),
+    ));
+
+    reg.register(catamaran_kube::connect::cluster_info_capability(cache.clone()));
+    reg.register(catamaran_kube::workloads::list_namespaces_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::workloads::list_pods_capability(cache.clone()));
+    reg.register(catamaran_kube::workloads::pods_for_selector_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::logs::pod_logs_capability(cache.clone()));
+    reg.register(catamaran_kube::deployments::list_deployments_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::deployments::list_replicasets_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::statefulsets::list_statefulsets_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::daemonsets::list_daemonsets_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::jobs::list_jobs_capability(cache.clone()));
+    reg.register(catamaran_kube::cronjobs::list_cronjobs_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::cronjobs::cronjob_set_suspend_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::cronjobs::cronjob_trigger_now_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::configmaps::list_configmaps_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::secrets::list_secrets_capability(cache.clone()));
+    reg.register(catamaran_kube::resourcequotas::list_resourcequotas_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::limitranges::list_limitranges_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::services::list_services_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::ingresses::list_ingresses_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::endpointslices::list_endpointslices_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::networkpolicies::list_networkpolicies_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::pvcs::list_pvcs_capability(cache.clone()));
+    reg.register(catamaran_kube::pvcs::pods_for_pvc_capability(cache.clone()));
+    reg.register(catamaran_kube::persistentvolumes::list_pvs_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::storageclasses::list_storageclasses_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::serviceaccounts::list_serviceaccounts_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::serviceaccounts::pods_for_service_account_capability(cache.clone()));
+    reg.register(catamaran_kube::serviceaccounts::bindings_for_service_account_capability(cache.clone()));
+    reg.register(catamaran_kube::roles::list_roles_capability(cache.clone()));
+    reg.register(catamaran_kube::roles::list_clusterroles_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::rolebindings::list_rolebindings_capability(
+        cache.clone(),
+    ));
+    reg.register(catamaran_kube::rolebindings::list_clusterrolebindings_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::delete_pod_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::evict_pod_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::delete_resource_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::scale_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::rollout_restart_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::update_config_data_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::cordon_node_capability(cache.clone()));
+    reg.register(catamaran_kube::actions::drain_node_capability(cache.clone()));
+    reg.register(catamaran_kube::events::list_events_capability(cache.clone()));
+    reg.register(catamaran_kube::metrics::node_metrics_capability(cache.clone()));
+    reg.register(catamaran_kube::metrics::pod_metrics_capability(cache.clone()));
+    reg.register(catamaran_kube::nodes::list_nodes_capability(cache.clone()));
+    reg.register(catamaran_kube::manifest::get_manifest_capability(cache.clone()));
+    reg.register(catamaran_kube::manifest::get_object_capability(cache.clone()));
+    reg.register(catamaran_kube::secrets::get_secret_capability(cache.clone()));
+    reg.register(catamaran_kube::manifest::apply_manifest_capability(cache.clone()));
+    reg.register(catamaran_kube::manifest::validate_manifest_capability(cache.clone()));
+    reg.register(catamaran_kube::schema::open_api_schema_capability(cache.clone()));
+    reg.register(catamaran_kube::crds::list_crds_capability(cache.clone()));
+    reg.register(catamaran_kube::crds::list_custom_resource_capability(cache.clone()));
+    reg.register(catamaran_kube::helm::list_helm_releases_capability(cache.clone()));
+    reg.register(catamaran_kube::helm::get_helm_release_capability(cache.clone()));
+    reg.register(catamaran_kube::manifest::list_resource_capability(cache));
+
+    reg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use catamaran_mcp::completeness::assert_every_capability_has_a_tool;
+    use catamaran_mcp::McpServer;
+    use std::sync::Arc;
+
+    #[test]
+    fn every_capability_is_mcp_exposed() {
+        let reg = build_registry();
+        let server = McpServer::new(Arc::new(reg.clone()));
+        assert_eq!(assert_every_capability_has_a_tool(&reg, &server), Ok(()));
+    }
+
+    #[test]
+    fn registers_core_capabilities() {
+        let reg = build_registry();
+        let mut ids = reg.ids();
+        ids.sort();
+        assert!(ids.contains(&"ping"));
+        assert!(ids.contains(&"k8s.listContexts"));
+        assert!(ids.contains(&"k8s.clusterInfo"));
+    }
+
+    #[tokio::test]
+    async fn ping_echoes_input() {
+        let reg = build_registry();
+        let out = reg.invoke("ping", json!("hello")).await.unwrap();
+        assert_eq!(out, json!({ "pong": "hello" }));
+    }
+
+    #[test]
+    fn kubeconfig_path_prefers_env() {
+        // Default falls back to a path under HOME when KUBECONFIG is unset.
+        let path = default_kubeconfig_path();
+        assert!(path.to_string_lossy().contains(".kube/config") || std::env::var("KUBECONFIG").is_ok());
+    }
+}

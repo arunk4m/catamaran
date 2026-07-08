@@ -1,0 +1,367 @@
+name: Release
+
+# dev  branch -> rolling pre-release tagged `catamaran-v<version>-<run>`
+# main branch -> the version is derived AUTOMATICALLY from Conventional Commits
+#                since the last stable tag (feat -> minor, fix/perf -> patch,
+#                BREAKING CHANGE or `!` -> major). The version files are bumped +
+#                committed back to main with [skip ci], then a stable
+#                `catamaran-v<version>` release is built. No manual bump needed; if
+#                there are no releasable commits the release is skipped.
+on:
+  push:
+    branches: [main, dev]
+
+# Don't cancel an in-flight release run (it could leave partial assets).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Auto-versioning (main only): compute the next semver from Conventional
+  # Commits, bump the version files, and commit the bump back to main ([skip ci]
+  # so it doesn't re-trigger). Outputs the new version + whether to release.
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      release: ${{ steps.compute.outputs.release }}
+      notes: ${{ steps.compute.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compute + commit next version
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Dev branch: derive a monotonic pre-release version that sorts ABOVE the
+          # current stable (semver prereleases sort below their release, so we bump
+          # the patch first): 0.1.0 -> 0.1.1-<run>. The prerelease identifier must be
+          # numeric-only (and <= 65535) so the Windows MSI target accepts it, so we
+          # use the run number alone. Not committed; the build job writes it into
+          # the version files locally before building.
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            CUR=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+            BASE=${CUR%%-*}
+            NEXT=$(node -e 'const p=process.argv[1].split(".").map(Number);p[2]++;process.stdout.write(p.join("."))' "$BASE")
+            DEVV="${NEXT}-${GITHUB_RUN_NUMBER}"
+            echo "version=$DEVV" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Dev build version: $DEVV"
+            exit 0
+          fi
+          # Latest STABLE tag only (catamaran-vX.Y.Z with no prerelease suffix).
+          LAST_TAG=$(git tag --list 'catamaran-v*' | grep -E '^catamaran-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          RANGE=""
+          [ -n "$LAST_TAG" ] && RANGE="${LAST_TAG}..HEAD"
+          SUBJECTS=$(git log --no-merges --pretty=%B ${RANGE})
+          if echo "$SUBJECTS" | grep -qiE '(^|[[:space:]])BREAKING[ -]CHANGE' \
+             || echo "$SUBJECTS" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+            BUMP=major
+          elif echo "$SUBJECTS" | grep -qE '^feat(\([^)]*\))?:'; then
+            BUMP=minor
+          elif echo "$SUBJECTS" | grep -qE '^(fix|perf)(\([^)]*\))?:'; then
+            BUMP=patch
+          else
+            BUMP=none
+          fi
+          echo "Detected bump since ${LAST_TAG:-<start>}: $BUMP"
+          if [ "$BUMP" = "none" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable (feat/fix/perf/breaking) commits — skipping release."
+            exit 0
+          fi
+          CUR=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          NEW=$(node -e 'const p=process.argv[1].split(".").map(Number);const k=process.argv[2];if(k==="major"){p[0]++;p[1]=0;p[2]=0}else if(k==="minor"){p[1]++;p[2]=0}else{p[2]++}process.stdout.write(p.join("."))' "$CUR" "$BUMP")
+          echo "Releasing $CUR -> $NEW"
+          node -e '
+            const fs=require("fs");const v=process.argv[1];
+            const sub=(p,re,to)=>{const s=fs.readFileSync(p,"utf8");const n=s.replace(re,to);if(n===s)throw new Error("no version match in "+p);fs.writeFileSync(p,n)};
+            sub("apps/desktop/src-tauri/tauri.conf.json",/("version":\s*)"[^"]+"/,`$1"${v}"`);
+            sub("apps/desktop/src-tauri/Cargo.toml",/^version = "[^"]+"/m,`version = "${v}"`);
+            sub("Cargo.lock",/(name = "catamaran-desktop"\r?\nversion = ")[^"]+(")/,`$1${v}$2`);
+          ' "$NEW"
+          # Grouped changelog for the release body.
+          strip='s/^[a-z]+(\([^)]*\))?!?:[[:space:]]*//'
+          FEATS=$(git log --no-merges --pretty=%s ${RANGE} | grep -E '^feat' | sed -E "$strip" | sed 's/^/- /' || true)
+          FIXES=$(git log --no-merges --pretty=%s ${RANGE} | grep -E '^(fix|perf)' | sed -E "$strip" | sed 's/^/- /' || true)
+          {
+            echo "notes<<__NOTES_EOF__"
+            [ -n "$FEATS" ] && printf '### Features\n%s\n\n' "$FEATS"
+            [ -n "$FIXES" ] && printf '### Fixes\n%s\n\n' "$FIXES"
+            echo "__NOTES_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          git config user.name "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git commit -am "chore(release): catamaran-v${NEW} [skip ci]"
+          git push origin HEAD:main
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    # Always run on dev (prereleases); on main only when the version job
+    # determined there is something to release.
+    if: ${{ always() && needs.version.result == 'success' && (github.ref_name != 'main' || needs.version.outputs.release == 'true') }}
+    permissions:
+      contents: write
+    env:
+      # macOS signing + notarization switch on automatically once the FULL
+      # Apple secret set is present; with anything less the build stays
+      # unsigned rather than failing on a partial configuration.
+      ENABLE_MAC_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # Apple Silicon
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - platform: macos-latest      # Intel
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - platform: ubuntu-22.04      # Linux
+            target: ''
+            args: ''
+          - platform: windows-latest    # Windows
+            target: ''
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On main, the version job already pushed the bump commit — build it.
+          ref: ${{ github.ref_name == 'main' && 'main' || github.sha }}
+
+      # Tauri v2 build dependencies.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libssl-dev \
+            build-essential \
+            curl wget file
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      # Write the resolved version into the bundle version files so the built
+      # app carries it. On main the version job already committed this value
+      # (idempotent here); on dev it's <next>-<run>.
+      - name: Set build version
+        shell: bash
+        run: |
+          V="${{ needs.version.outputs.version }}"
+          node -e '
+            const fs=require("fs");const v=process.argv[1];
+            const sub=(p,re,to)=>{const s=fs.readFileSync(p,"utf8");if(!re.test(s))throw new Error("no version field in "+p);fs.writeFileSync(p,s.replace(re,to))};
+            sub("apps/desktop/src-tauri/tauri.conf.json",/("version":\s*)"[^"]+"/,`$1"${v}"`);
+            sub("apps/desktop/src-tauri/Cargo.toml",/^version = "[^"]+"/m,`version = "${v}"`);
+            sub("Cargo.lock",/(name = "catamaran-desktop"\r?\nversion = ")[^"]+(")/,`$1${v}$2`);
+          ' "$V"
+          echo "Built version: $V"
+
+      # Export the Apple signing env ONLY when the full secret set exists.
+      # Tauri treats a *defined but empty* APPLE_CERTIFICATE as "please sign"
+      # and then fails importing the empty cert — so these variables must be
+      # absent (not empty) on unsigned builds.
+      - name: Enable macOS signing (when secrets are configured)
+        if: matrix.platform == 'macos-latest' && env.ENABLE_MAC_SIGNING == 'true'
+        run: |
+          {
+            echo "APPLE_CERTIFICATE<<__EOF__";          echo "${{ secrets.APPLE_CERTIFICATE }}";          echo "__EOF__"
+            echo "APPLE_CERTIFICATE_PASSWORD<<__EOF__"; echo "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"; echo "__EOF__"
+            echo "APPLE_SIGNING_IDENTITY<<__EOF__";     echo "${{ secrets.APPLE_SIGNING_IDENTITY }}";     echo "__EOF__"
+            echo "APPLE_API_ISSUER<<__EOF__";           echo "${{ secrets.APPLE_API_ISSUER }}";           echo "__EOF__"
+            echo "APPLE_API_KEY<<__EOF__";              echo "${{ secrets.APPLE_API_KEY }}";              echo "__EOF__"
+          } >> "$GITHUB_ENV"
+          # Notarization uses an App Store Connect API key (.p8) materialized
+          # to a file; tauri-action reads APPLE_API_KEY_PATH from there.
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 --decode > "$RUNNER_TEMP/apple_api_key.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple_api_key.p8" >> "$GITHUB_ENV"
+
+      # Stable -> catamaran-v<version>. Dev -> a unique semver pre-release
+      # (catamaran-vX.Y.Z-<run>) so every dev build gets its own tag.
+      - name: Compute release tag
+        shell: bash
+        run: |
+          echo "REL_TAG=catamaran-v${{ needs.version.outputs.version }}" >> "$GITHUB_ENV"
+          echo "REL_NAME=catamaran v${{ needs.version.outputs.version }}" >> "$GITHUB_ENV"
+
+      - name: Build app & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — produces the .sig files latest.json needs so the
+          # in-app updater can verify downloads.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple signing env (APPLE_CERTIFICATE etc.) is exported to
+          # GITHUB_ENV by the step above only when signing is enabled —
+          # defining the variables empty here would trigger Tauri's signing
+          # path, which then fails importing an empty certificate.
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ env.REL_TAG }}
+          releaseName: ${{ env.REL_NAME }}
+          # On main, real notes are computed in the version job; dev keeps a
+          # placeholder filled in by the release-notes job.
+          releaseBody: ${{ needs.version.outputs.notes || 'Generating release notes…' }}
+          prerelease: ${{ github.ref_name != 'main' }}
+          args: ${{ matrix.args }}
+          # Each matrix job uploads its own binaries + signatures, but NOT
+          # latest.json — parallel jobs would race on that single asset. The
+          # updater-manifest job assembles it once, after all builds.
+          includeUpdaterJson: false
+
+  # Dev only: fill the pre-release body with a recent-commit list and keep the
+  # Releases page tidy. Stable (main) notes come from the version job.
+  release-notes:
+    needs: [version, build]
+    if: github.ref_name != 'main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compose and publish release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          TAG="catamaran-v${VERSION}"
+          {
+            echo "Development pre-release — unstable, not for production."
+            echo ""
+            echo "**Commit:** \`${{ github.sha }}\`"
+            echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "### Recent changes"
+            git log -15 --no-merges --pretty='- %s (%h)'
+          } > notes.md
+          gh release edit "$TAG" --notes-file notes.md
+
+      # Keep only the 10 newest dev pre-releases (tags like catamaran-vX.Y.Z-<run>)
+      # and delete the rest + their tags.
+      - name: Prune old dev pre-releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 100 --json tagName,createdAt,isPrerelease \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("-[0-9]+$")))]
+                  | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
+          | while read -r t; do
+              [ -n "$t" ] && gh release delete "$t" --cleanup-tag --yes
+            done
+
+  # Assemble latest.json ONCE from the per-platform .sig files the matrix
+  # uploaded, then publish it per channel:
+  #   stable (main) -> the release itself, served at releases/latest/download/latest.json
+  #   dev           -> the permanent `dev-channel` pre-release, giving dev builds
+  #                    a stable manifest URL for this build's assets.
+  updater-manifest:
+    needs: [version, build]
+    if: ${{ always() && needs.build.result == 'success' && (github.ref_name != 'main' || needs.version.outputs.release == 'true') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name == 'main' && 'main' || github.sha }}
+      - name: Compose and publish updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+          NOTES: ${{ needs.version.outputs.notes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export REL_TAG="catamaran-v${VERSION}"
+          mkdir -p sigs
+          gh release download "$REL_TAG" --repo "$REPO" --pattern '*.sig' --dir sigs --clobber || true
+          if ! ls sigs/*.sig >/dev/null 2>&1; then
+            echo "No .sig files on $REL_TAG — updater signing key not configured yet; skipping manifest."
+            exit 0
+          fi
+          node .github/scripts/compose-latest.cjs
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            gh release upload "$REL_TAG" latest.json --repo "$REPO" --clobber
+          else
+            gh release view dev-channel --repo "$REPO" >/dev/null 2>&1 || \
+              gh release create dev-channel --repo "$REPO" --prerelease \
+                --title "Dev channel" \
+                --notes "Rolling dev-channel updater manifest. Do not delete." \
+                --target "$GITHUB_SHA"
+            gh release upload dev-channel latest.json --repo "$REPO" --clobber
+          fi
+
+  # Attach detached GPG signatures (.asc) to every release asset so users can
+  # verify authenticity (`gpg --verify file.asc file`). Activates automatically
+  # once the GPG_PRIVATE_KEY secret is set; otherwise it's a no-op.
+  sign-artifacts:
+    needs: [version, build]
+    if: ${{ always() && needs.build.result == 'success' && (github.ref_name != 'main' || needs.version.outputs.release == 'true') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      ENABLE_GPG: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+    steps:
+      - name: Import GPG key
+        if: env.ENABLE_GPG == 'true'
+        run: echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 --decode | gpg --batch --import
+      - name: Sign release assets
+        if: env.ENABLE_GPG == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="catamaran-v${{ needs.version.outputs.version }}"
+          KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/ {print $5; exit}')
+          mkdir -p _assets && cd _assets
+          gh release download "$TAG" --repo "${{ github.repository }}" --clobber
+          shopt -s nullglob
+          for f in *; do
+            case "$f" in *.asc) continue ;; esac
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$KEYID" --armor --detach-sign --output "$f.asc" "$f"
+          done
+          if ls *.asc >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "${{ github.repository }}" *.asc --clobber
+          fi
