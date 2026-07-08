@@ -25,12 +25,20 @@ let streamSeq = 0;
  * The listener is registered BEFORE the backend stream starts, so the initial
  * tail lines can't race ahead of the subscription and get dropped.
  */
+/** Window/decoration options for a live tail (subset of the snapshot options). */
+export interface LogStreamOptions {
+  tailLines?: number;
+  sinceSeconds?: number;
+  timestamps?: boolean;
+}
+
 export async function startLogStream(
   context: string,
   namespace: string,
   targets: LogTarget[],
   onLine: (source: string, line: string) => void,
   onStatus?: (status: LogStatus) => void,
+  options: LogStreamOptions = {},
 ): Promise<LogStream> {
   if (targets.length === 0) throw new Error("cannot start live logs without a pod target");
   const channel = `logs:line:${++streamSeq}`;
@@ -53,6 +61,9 @@ export async function startLogStream(
         container: t.container ?? null,
         label: t.label ?? "",
       })),
+      tailLines: options.tailLines ?? null,
+      sinceSeconds: options.sinceSeconds ?? null,
+      timestamps: options.timestamps ?? false,
     });
   } catch (e) {
     dispose();

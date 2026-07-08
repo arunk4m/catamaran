@@ -15,6 +15,51 @@ use crate::connect::request_timeout;
 
 const DEFAULT_TAIL_LINES: i64 = 200;
 
+/// Shared log-window options: how far back to read, and line decoration.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LogOptions {
+    /// Trailing lines to fetch (ignored when `since_seconds` is set).
+    pub tail_lines: Option<i64>,
+    /// Read from this many seconds ago instead of a line count.
+    pub since_seconds: Option<i64>,
+    /// Prefix each line with its RFC3339 timestamp.
+    pub timestamps: bool,
+}
+
+/// Map shared options onto kube-rs `LogParams` for a follow stream. A `since`
+/// window wins over a tail count (matching kubectl, where `--since` and
+/// `--tail` are alternatives).
+fn stream_params(container: Option<String>, opts: LogOptions) -> LogParams {
+    LogParams {
+        container,
+        follow: true,
+        tail_lines: if opts.since_seconds.is_some() {
+            None
+        } else {
+            Some(opts.tail_lines.unwrap_or(DEFAULT_TAIL_LINES))
+        },
+        since_seconds: opts.since_seconds,
+        timestamps: opts.timestamps,
+        ..Default::default()
+    }
+}
+
+/// Map snapshot inputs onto `LogParams` (no follow; `previous` supported).
+fn snapshot_params(container: Option<String>, opts: LogOptions, previous: bool) -> LogParams {
+    LogParams {
+        container,
+        previous,
+        tail_lines: if opts.since_seconds.is_some() {
+            None
+        } else {
+            Some(opts.tail_lines.unwrap_or(DEFAULT_TAIL_LINES))
+        },
+        since_seconds: opts.since_seconds,
+        timestamps: opts.timestamps,
+        ..Default::default()
+    }
+}
+
 /// Follow a pod/container's logs, invoking `on_line` for each line as it
 /// arrives. Runs until the stream closes (pod exits) or the task is aborted.
 /// Tauri-agnostic so the streaming logic stays reusable.
@@ -24,7 +69,7 @@ pub async fn stream_pod_logs<F, G>(
     namespace: String,
     pod: String,
     container: Option<String>,
-    tail_lines: i64,
+    opts: LogOptions,
     mut on_line: F,
     mut on_connected: G,
 ) -> Result<(), String>
@@ -34,12 +79,7 @@ where
 {
     let client = cache.get(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
-    let params = LogParams {
-        container,
-        follow: true,
-        tail_lines: Some(tail_lines),
-        ..Default::default()
-    };
+    let params = stream_params(container, opts);
     let reader = tokio::time::timeout(request_timeout(), api.log_stream(&pod, &params))
         .await
         .map_err(|_| "open log stream timed out".to_string())?
@@ -66,7 +106,7 @@ pub async fn stream_pod_logs_resilient<F, G>(
     namespace: String,
     pod: String,
     container: Option<String>,
-    tail_lines: i64,
+    opts: LogOptions,
     mut on_line: F,
     mut on_status: G,
 ) where
@@ -75,14 +115,20 @@ pub async fn stream_pod_logs_resilient<F, G>(
 {
     let mut first = true;
     loop {
-        let tail = if first { tail_lines } else { 0 };
+        // The first connect honours the requested window; reconnects tail 0
+        // (only new lines) so history isn't re-printed.
+        let connect_opts = if first {
+            opts
+        } else {
+            LogOptions { tail_lines: Some(0), since_seconds: None, timestamps: opts.timestamps }
+        };
         let _ = stream_pod_logs(
             cache.clone(),
             context.clone(),
             namespace.clone(),
             pod.clone(),
             container.clone(),
-            tail,
+            connect_opts,
             |line| on_line(line),
             || on_status("live"),
         )
@@ -105,6 +151,15 @@ pub struct PodLogsIn {
     /// Number of trailing lines to return (default 200).
     #[serde(default)]
     pub tail_lines: Option<i64>,
+    /// Return logs from the previous (crashed/restarted) container instance.
+    #[serde(default)]
+    pub previous: Option<bool>,
+    /// Prefix each line with its RFC3339 timestamp.
+    #[serde(default)]
+    pub timestamps: Option<bool>,
+    /// Return logs newer than this many seconds (overrides tail_lines).
+    #[serde(default)]
+    pub since_seconds: Option<i64>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -126,11 +181,15 @@ pub fn pod_logs_capability(cache: Arc<ClientCache>) -> Capability {
                     .await
                     .map_err(CapabilityError::Handler)?;
                 let api: Api<Pod> = Api::namespaced(client, &input.namespace);
-                let params = LogParams {
-                    container: input.container.clone(),
-                    tail_lines: Some(input.tail_lines.unwrap_or(DEFAULT_TAIL_LINES)),
-                    ..Default::default()
-                };
+                let params = snapshot_params(
+                    input.container.clone(),
+                    LogOptions {
+                        tail_lines: input.tail_lines,
+                        since_seconds: input.since_seconds,
+                        timestamps: input.timestamps.unwrap_or(false),
+                    },
+                    input.previous.unwrap_or(false),
+                );
                 let logs = tokio::time::timeout(request_timeout(), api.logs(&input.pod, &params))
                     .await
                     .map_err(|_| CapabilityError::Handler("fetch logs timed out".into()))?
@@ -151,5 +210,56 @@ mod tests {
         let cap = pod_logs_capability(ClientCache::new(PathBuf::from("/x")));
         assert_eq!(cap.id, "k8s.podLogs");
         assert!(cap.annotations.read_only);
+    }
+
+    #[test]
+    fn stream_params_default_to_a_tail_window() {
+        let p = stream_params(Some("app".into()), LogOptions::default());
+        assert!(p.follow);
+        assert_eq!(p.container.as_deref(), Some("app"));
+        assert_eq!(p.tail_lines, Some(DEFAULT_TAIL_LINES));
+        assert_eq!(p.since_seconds, None);
+        assert!(!p.timestamps);
+    }
+
+    #[test]
+    fn a_since_window_overrides_the_tail_count() {
+        let p = stream_params(
+            None,
+            LogOptions { tail_lines: Some(500), since_seconds: Some(300), timestamps: true },
+        );
+        assert_eq!(p.tail_lines, None);
+        assert_eq!(p.since_seconds, Some(300));
+        assert!(p.timestamps);
+    }
+
+    #[test]
+    fn snapshot_params_carry_previous_and_timestamps() {
+        let p = snapshot_params(
+            Some("app".into()),
+            LogOptions { tail_lines: Some(1000), since_seconds: None, timestamps: true },
+            true,
+        );
+        assert!(!p.follow);
+        assert!(p.previous);
+        assert!(p.timestamps);
+        assert_eq!(p.tail_lines, Some(1000));
+    }
+
+    #[test]
+    fn pod_logs_input_accepts_the_new_window_fields() {
+        let input: PodLogsIn = serde_json::from_value(serde_json::json!({
+            "context": "kind-dev",
+            "namespace": "default",
+            "pod": "web-1",
+            "previous": true,
+            "timestamps": true,
+            "since_seconds": 600
+        }))
+        .unwrap();
+        assert_eq!(input.previous, Some(true));
+        assert_eq!(input.timestamps, Some(true));
+        assert_eq!(input.since_seconds, Some(600));
+        assert_eq!(input.tail_lines, None);
     }
 }

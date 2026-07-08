@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Download, Pause, Play, RefreshCw, WrapText } from "lucide-react";
+import { Clock, Download, History, Pause, Play, RefreshCw, WrapText } from "lucide-react";
 import { podLogs, podsForSelector } from "../lib/workloads";
 import { getObject } from "../lib/manifest";
 import { startLogStream, type LogStream, type LogTarget, type LogStatus } from "../lib/logsStream";
@@ -16,11 +16,34 @@ const ALL = "__all__";
 /** Cap the live-tail buffer so a chatty stream can't grow without bound. */
 const MAX_LINES = 5000;
 
+/** Selectable log windows: a trailing line count, or a time span. */
+const WINDOW_CHOICES = [
+  { value: "tail:100", label: "Last 100 lines" },
+  { value: "tail:200", label: "Last 200 lines" },
+  { value: "tail:1000", label: "Last 1,000 lines" },
+  { value: "tail:5000", label: "Last 5,000 lines" },
+  { value: "since:300", label: "Last 5 minutes" },
+  { value: "since:900", label: "Last 15 minutes" },
+  { value: "since:3600", label: "Last hour" },
+  { value: "since:21600", label: "Last 6 hours" },
+  { value: "since:86400", label: "Last 24 hours" },
+];
+
+/** Decode a window selection ("tail:200" / "since:3600") into fetch options. */
+export function windowOptions(selection: string): { tailLines?: number; sinceSeconds?: number } {
+  const [mode, raw] = selection.split(":");
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return { tailLines: 200 };
+  return mode === "since" ? { sinceSeconds: n } : { tailLines: n };
+}
+
 /** Classify a klog-style line (I/W/E0629 …) for colourising. */
 function lineLevel(line: string): "error" | "warn" | "info" | "plain" {
-  if (/^E\d{4}\b/.test(line) || /\b(error|fatal|panic)\b/i.test(line)) return "error";
-  if (/^W\d{4}\b/.test(line) || /\bwarn(ing)?\b/i.test(line)) return "warn";
-  if (/^I\d{4}\b/.test(line)) return "info";
+  // Timestamps mode prefixes each line with RFC3339 — skip it for detection.
+  const text = line.replace(/^\d{4}-\d{2}-\d{2}T[0-9:.+Zz-]+\s+/, "");
+  if (/^E\d{4}\b/.test(text) || /\b(error|fatal|panic)\b/i.test(text)) return "error";
+  if (/^W\d{4}\b/.test(text) || /\bwarn(ing)?\b/i.test(text)) return "warn";
+  if (/^I\d{4}\b/.test(text)) return "info";
   return "plain";
 }
 
@@ -64,6 +87,9 @@ export function LogsView({
   const [loading, setLoading] = useState(false);
   const [wrap, setWrap] = useState(false);
   const [follow, setFollow] = useState(false);
+  const [logWindow, setLogWindow] = useState("tail:200");
+  const [timestamps, setTimestamps] = useState(false);
+  const [previous, setPrevious] = useState(false);
   const [streamStatus, setStreamStatus] = useState<LogStatus | "connecting">("connecting");
   const [search, setSearch] = useState("");
   const linesRef = useRef<string[]>([]);
@@ -161,7 +187,11 @@ export function LogsView({
       const collected: string[] = [];
       let firstError = "";
       for (const t of targets) {
-        const out = await podLogs(context, namespace, t.pod, undefined, t.container);
+        const out = await podLogs(context, namespace, t.pod, undefined, t.container, {
+          ...windowOptions(logWindow),
+          timestamps,
+          previous,
+        });
         if (out.error) {
           if (!firstError) firstError = out.error;
           continue;
@@ -178,7 +208,7 @@ export function LogsView({
     return () => {
       active = false;
     };
-  }, [context, namespace, targets]);
+  }, [context, namespace, targets, logWindow, timestamps, previous]);
 
   useEffect(() => {
     if (follow) return;
@@ -212,6 +242,7 @@ export function LogsView({
       (status) => {
         if (!stopped) setStreamStatus(status);
       },
+      { ...windowOptions(logWindow), timestamps },
     ).then((s) => {
       setLoading(false);
       if (stopped) s.stop();
@@ -227,7 +258,7 @@ export function LogsView({
       streamRef.current?.stop();
       streamRef.current = null;
     };
-  }, [follow, context, namespace, targets, targetsReady]);
+  }, [follow, context, namespace, targets, targetsReady, logWindow, timestamps]);
 
   const visible = useMemo(() => {
     if (!search) return lines;
@@ -248,6 +279,15 @@ export function LogsView({
         autoScrollRef.current = true;
         setStreamError("");
       }
+      return next;
+    });
+  }
+
+  /** Previous-instance logs describe a terminated container — stop following. */
+  function togglePrevious() {
+    setPrevious((current) => {
+      const next = !current;
+      if (next) setFollow(false);
       return next;
     });
   }
@@ -295,6 +335,9 @@ export function LogsView({
           />
         )}
 
+        <Select value={logWindow} onValueChange={setLogWindow} options={WINDOW_CHOICES} aria-label="Log window" />
+        {previous && <span className="text-amber-600 dark:text-amber-400">previous instance</span>}
+
         <div className="relative w-44">
           <TextInput value={search} onValueChange={setSearch} placeholder="Search logs…" aria-label="Search logs" />
         </div>
@@ -319,9 +362,22 @@ export function LogsView({
             </span>
           )}
           <IconButton
+            icon={Clock}
+            label={timestamps ? "Hide timestamps" : "Show timestamps"}
+            active={timestamps}
+            onClick={() => setTimestamps((t) => !t)}
+          />
+          <IconButton
+            icon={History}
+            label={previous ? "Show current instance" : "Show previous instance"}
+            active={previous}
+            onClick={togglePrevious}
+          />
+          <IconButton
             icon={follow ? Pause : Play}
             label={follow ? "Pause live tail" : "Live tail"}
             onClick={toggleFollow}
+            disabled={previous}
           />
           <IconButton icon={WrapText} label={wrap ? "Disable wrap" : "Wrap lines"} onClick={() => setWrap((w) => !w)} />
           {saveError && <span className="text-red-600 dark:text-red-400">save failed</span>}
