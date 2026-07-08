@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "catamaran-capability"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "catamaran-kube"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "catamaran-capability",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "catamaran-mcp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "catamaran-capability",
