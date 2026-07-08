@@ -1,5 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Braces, type LucideIcon } from "lucide-react";
+import {
+  ArrowLeftRight,
+  Braces,
+  Columns2,
+  FilePlus2,
+  Link2,
+  PanelRight,
+  SunMoon,
+  type LucideIcon,
+} from "lucide-react";
 import {
   Command,
   CommandDialog,
@@ -12,8 +21,85 @@ import {
 import { RESOURCE_LABELS, K8S_KIND, type ResourceKind } from "./ResourceBrowser";
 import { listResource } from "../lib/manifest";
 import { listCrds, type CrdRef } from "../lib/crds";
-import { getRecents, pushRecent, type RecentItem } from "../lib/recents";
+import { getRecents, pushRecent, recentId, type RecentItem } from "../lib/recents";
+import { rankItems } from "../lib/paletteRank";
 import { iconForResourceKind } from "../ui/NavIcon";
+
+/** Workspace-level commands the palette can run. */
+export interface PaletteActions {
+  split: boolean;
+  linked: boolean;
+  hasContext: boolean;
+  onToggleSplit: () => void;
+  onFocusOtherPane: () => void;
+  onToggleLinked: () => void;
+  onSwapPanes: () => void;
+  onToggleTheme: () => void;
+  onNewResource: () => void;
+}
+
+interface ActionItem {
+  id: string;
+  label: string;
+  /** Extra match text so e.g. "pane" finds every deck command. */
+  keywords: string;
+  icon: LucideIcon;
+  run: () => void;
+}
+
+function buildActions(actions: PaletteActions): ActionItem[] {
+  const items: ActionItem[] = [
+    {
+      id: "act:split",
+      label: actions.split ? "Close Split View" : "Split the Deck",
+      keywords: "split view pane deck side by side",
+      icon: Columns2,
+      run: actions.onToggleSplit,
+    },
+  ];
+  if (actions.split) {
+    items.push(
+      {
+        id: "act:focus-other",
+        label: "Focus Other Pane",
+        keywords: "pane switch focus port starboard",
+        icon: PanelRight,
+        run: actions.onFocusOtherPane,
+      },
+      {
+        id: "act:link",
+        label: actions.linked ? "Unlink Panes" : "Link Panes",
+        keywords: "link mirror navigation panes deck",
+        icon: Link2,
+        run: actions.onToggleLinked,
+      },
+      {
+        id: "act:swap",
+        label: "Swap Panes",
+        keywords: "swap panes port starboard exchange",
+        icon: ArrowLeftRight,
+        run: actions.onSwapPanes,
+      },
+    );
+  }
+  items.push({
+    id: "act:theme",
+    label: "Toggle Light/Dark Theme",
+    keywords: "theme dark light mode appearance",
+    icon: SunMoon,
+    run: actions.onToggleTheme,
+  });
+  if (actions.hasContext) {
+    items.push({
+      id: "act:new",
+      label: "New Resource…",
+      keywords: "create new resource yaml apply editor",
+      icon: FilePlus2,
+      run: actions.onNewResource,
+    });
+  }
+  return items;
+}
 
 /** Kinds indexed for name search when the palette opens. */
 const SEARCH_KINDS: ResourceKind[] = [
@@ -50,21 +136,12 @@ function PaletteIcon({ icon: Icon }: { icon: LucideIcon }) {
   return <Icon aria-hidden="true" />;
 }
 
-/** Rank startsWith matches before substring matches, then alphabetically. */
-function rankBy<T>(q: string, keyOf: (t: T) => string) {
-  return (a: T, b: T) => {
-    const A = keyOf(a).toLowerCase();
-    const B = keyOf(b).toLowerCase();
-    const as = A.startsWith(q) ? 0 : 1;
-    const bs = B.startsWith(q) ? 0 : 1;
-    return as !== bs ? as - bs : A.localeCompare(B);
-  };
-}
-
 /**
- * Global command palette (Cmd/Ctrl-K): jump to any resource view, or fuzzy-find
- * a resource by name across kinds and open its detail. Resources are indexed
- * once when the palette opens; filtering is client-side for instant feedback.
+ * Global command palette (Cmd/Ctrl-K): jump to any resource view, fuzzy-find
+ * a resource by name across kinds and open its detail, or run a workspace
+ * action (split view, theme, …). Resources are indexed once when the palette
+ * opens; filtering is client-side (fuzzy subsequence + frecency) for instant
+ * feedback.
  */
 export function CommandPalette({
   open,
@@ -73,6 +150,7 @@ export function CommandPalette({
   onOpenView,
   onOpenResource,
   onOpenCrd,
+  actions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -80,6 +158,8 @@ export function CommandPalette({
   onOpenView: (kind: ResourceKind) => void;
   onOpenResource: (kind: ResourceKind, namespace: string | null, name: string) => void;
   onOpenCrd: (crd: CrdRef) => void;
+  /** Workspace actions surfaced in the Actions group (optional in tests). */
+  actions?: PaletteActions;
 }) {
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<ResItem[]>([]);
@@ -117,9 +197,12 @@ export function CommandPalette({
   const q = query.trim().toLowerCase();
 
   // "Go to": resource kinds plus discovered CRDs (opened as custom-resource views).
+  // Ids of recent targets, most-recent-first, for the frecency boost.
+  const recentIds = useMemo(() => recents.map((r) => recentId(r)), [recents]);
+
   const navMatches = useMemo(() => {
     const kinds = NAV_KINDS.map((k) => ({
-      id: `k:${k}`,
+      id: `view:${k}`,
       label: RESOURCE_LABELS[k],
       recent: { type: "view", kind: k, label: RESOURCE_LABELS[k] } as RecentItem,
     }));
@@ -128,13 +211,16 @@ export function CommandPalette({
       label: `${c.kind} (CRD)`,
       recent: { type: "crd", crd: c, label: `${c.kind} (CRD)` } as RecentItem,
     }));
-    const all = [...kinds, ...crdNav];
-    if (!q) return kinds.slice(0, 6);
-    return all
-      .filter((n) => n.label.toLowerCase().includes(q))
-      .sort(rankBy(q, (n) => n.label))
-      .slice(0, 8);
-  }, [q, crds]);
+    if (!q) return rankItems(kinds, "", (n) => n.label, (n) => n.id, recentIds).slice(0, 6);
+    return rankItems([...kinds, ...crdNav], q, (n) => n.label, (n) => n.id, recentIds).slice(0, 8);
+  }, [q, crds, recentIds]);
+
+  const actionMatches = useMemo(() => {
+    if (!actions) return [];
+    const all = buildActions(actions);
+    if (!q) return all;
+    return rankItems(all, q, (a) => `${a.label} ${a.keywords}`, (a) => a.id).slice(0, 6);
+  }, [actions, q]);
 
   // Dispatch a chosen item, record it in recents, and close the palette.
   function pick(item: RecentItem) {
@@ -145,13 +231,18 @@ export function CommandPalette({
     onOpenChange(false);
   }
 
+  function runAction(action: ActionItem) {
+    action.run();
+    onOpenChange(false);
+  }
+
   const resMatches = useMemo(() => {
     if (!q) return [];
-    return items
-      .filter((r) => r.name.toLowerCase().includes(q))
-      .sort(rankBy(q, (r) => r.name))
-      .slice(0, 50);
-  }, [items, q]);
+    return rankItems(items, q, (r) => r.name, (r) => `res:${r.kind}:${r.namespace}:${r.name}`, recentIds).slice(
+      0,
+      50,
+    );
+  }, [items, q, recentIds]);
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange} title="Search" description="Jump to a view or resource">
@@ -180,6 +271,17 @@ export function CommandPalette({
                 <CommandItem key={n.id} value={`nav:${n.id}`} onSelect={() => pick(n.recent)}>
                   <PaletteIcon icon={iconForRecent(n.recent)} />
                   {n.label}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          )}
+
+          {actionMatches.length > 0 && (
+            <CommandGroup heading="Actions">
+              {actionMatches.map((a) => (
+                <CommandItem key={a.id} value={`action:${a.id}`} onSelect={() => runAction(a)}>
+                  <PaletteIcon icon={a.icon} />
+                  {a.label}
                 </CommandItem>
               ))}
             </CommandGroup>
