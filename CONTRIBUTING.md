@@ -1,6 +1,6 @@
-# Contributing to catamaran
+# Contributing to Catamaran
 
-Thanks for your interest! catamaran is in early, active development, so expect fast movement and breaking changes.
+Thanks for your interest! Catamaran is in early, active development, so expect fast movement and breaking changes.
 
 By participating, you agree to abide by our [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 

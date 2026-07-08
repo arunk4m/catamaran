@@ -77,12 +77,12 @@ fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
     let handle = app.handle();
 
     let about = AboutMetadata {
-        name: Some("catamaran".into()),
+        name: Some("Catamaran".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         ..Default::default()
     };
 
-    let app_menu = SubmenuBuilder::new(handle, "catamaran")
+    let app_menu = SubmenuBuilder::new(handle, "Catamaran")
         .about(Some(about))
         .separator()
         .services()
