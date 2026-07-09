@@ -3913,3 +3913,340 @@ body {
   color: var(--cat-color-text);
   background: var(--cat-color-brand-soft);
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Regatta chrome — Catamaran's own design language.
+   A deep aurora backdrop; the content area floats as a rounded card; the
+   rail and nav sit directly on the backdrop as labeled, pill-shaped
+   controls. This layer intentionally comes last and retires the inherited
+   hard-border look everywhere.
+   ════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --cat-chrome-gap: 8px;
+  --cat-card-radius: 14px;
+  --cat-ring-gradient: conic-gradient(
+    from 210deg,
+    #38bdf8,
+    var(--cat-color-accent),
+    var(--cat-color-brand),
+    #38bdf8
+  );
+}
+
+/* ── The backdrop: aurora wash behind everything ─────────────────────── */
+.cat-app {
+  background:
+    radial-gradient(1100px 520px at 12% -8%, color-mix(in srgb, var(--cat-color-accent) 9%, transparent), transparent 62%),
+    radial-gradient(900px 460px at 98% -6%, color-mix(in srgb, var(--cat-color-brand) 7%, transparent), transparent 58%),
+    var(--cat-color-hotbar);
+}
+
+/* ── The floating content card ───────────────────────────────────────── */
+.cat-main {
+  margin: var(--cat-chrome-gap) var(--cat-chrome-gap) 0 0;
+  border-radius: var(--cat-card-radius);
+  border: 1px solid var(--cat-color-border-faint);
+  background: var(--cat-color-bg);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #ffffff 4%, transparent) inset,
+    0 12px 32px -18px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.cat-app--no-cluster .cat-main {
+  margin-left: var(--cat-chrome-gap);
+}
+
+/* ── Cluster rail: brand mast, labeled fleet, circular actions ───────── */
+.cat-hotbar {
+  background: transparent;
+  border-right: none;
+  gap: 6px;
+  padding: 12px 0 12px;
+  overflow-y: visible; /* the fleet scrolls; the mast and actions stay pinned */
+}
+.cat-hotbar__brand {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 6px;
+  flex: none;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+.cat-hotbar__brand img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.cat-hotbar__fleet {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  width: 100%;
+  padding: 2px 0;
+}
+.cat-hotbar__fleet::-webkit-scrollbar { width: 0; }
+.cat-hotbar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 66px;
+  padding: 6px 2px 5px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.cat-hotbar__item:hover {
+  background: color-mix(in srgb, var(--cat-color-text) 7%, transparent);
+}
+.cat-hotbar__item--active::before {
+  content: none; /* retire the inherited side-bar indicator */
+}
+.cat-hotbar__ring {
+  display: block;
+  border-radius: 50%;
+  padding: 2.5px;
+  background: transparent;
+  transition: box-shadow 160ms ease;
+}
+.cat-hotbar__item--active .cat-hotbar__ring {
+  background: var(--cat-ring-gradient);
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--cat-color-accent) 38%, transparent);
+}
+.cat-hotbar__ring-gap {
+  position: relative;
+  display: block;
+  border-radius: 50%;
+  padding: 2px;
+  background: transparent;
+}
+.cat-hotbar__item--active .cat-hotbar__ring-gap {
+  background: var(--cat-color-hotbar);
+}
+.cat-hotbar__item .cat-avatar {
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1.2);
+}
+.cat-hotbar__item:hover .cat-avatar {
+  transform: scale(1.07);
+}
+.cat-hotbar__item:active .cat-avatar {
+  transform: scale(0.96);
+}
+.cat-hotbar__item--active .cat-avatar {
+  box-shadow: none;
+}
+.cat-hotbar__dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cat-color-success);
+  box-shadow: 0 0 0 2.5px var(--cat-color-hotbar);
+}
+.cat-hotbar__name {
+  max-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--cat-color-text-muted);
+  transition: color 140ms ease;
+}
+.cat-hotbar__item--active .cat-hotbar__name {
+  color: var(--cat-color-text);
+  font-weight: 600;
+}
+.cat-hotbar__actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  flex: none;
+}
+.cat-hotbar__theme,
+.cat-hotbar .cat-hotbar__theme {
+  margin-top: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--cat-color-border-faint);
+  background: transparent;
+  color: var(--cat-color-text-muted);
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.cat-hotbar__theme:hover:not(:disabled) {
+  color: var(--cat-color-text);
+  border-color: color-mix(in srgb, var(--cat-color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--cat-color-accent) 12%, transparent);
+}
+
+/* ── Context avatars: soft-tint circles everywhere ───────────────────── */
+.cat-avatar,
+.cat-landing__context-glyph,
+.cat-landing__context-list-avatar,
+.cat-settings-context-avatar,
+.cat-context-editor__avatar,
+.cat-context-logo-preview {
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ctx-color, var(--cat-color-accent)) 16%, transparent);
+  color: var(--ctx-color, var(--cat-color-accent));
+  font-weight: 650;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ctx-color, var(--cat-color-accent)) 40%, transparent);
+}
+[data-theme-mode="light"] .cat-avatar,
+[data-theme-mode="light"] .cat-landing__context-glyph,
+[data-theme-mode="light"] .cat-landing__context-list-avatar,
+[data-theme-mode="light"] .cat-settings-context-avatar,
+[data-theme-mode="light"] .cat-context-editor__avatar,
+[data-theme-mode="light"] .cat-context-logo-preview {
+  background: color-mix(in srgb, var(--ctx-color, var(--cat-color-accent)) 18%, transparent);
+  color: color-mix(in srgb, var(--ctx-color, var(--cat-color-accent)) 72%, #1b2040);
+}
+.cat-avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+.cat-context-avatar__image {
+  border-radius: 50%;
+}
+
+/* ── Deck tabs: detached pills instead of bordered blocks ────────────── */
+.cat-ctabs,
+[data-theme-mode="dark"] .cat-ctabs {
+  min-height: 42px;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  background: transparent;
+  border-bottom: 1px solid var(--cat-color-border-faint);
+}
+.cat-ctab,
+[data-theme-mode="dark"] .cat-ctab {
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--cat-color-text-muted);
+  font-weight: 500;
+  padding: 0 10px;
+  transition: background 130ms ease, color 130ms ease, border-color 130ms ease;
+}
+.cat-ctab--inactive:hover {
+  background: color-mix(in srgb, var(--cat-color-text) 7%, transparent);
+  color: var(--cat-color-text);
+}
+.cat-ctab--active,
+[data-theme-mode="dark"] .cat-ctab--active {
+  background: var(--cat-color-surface-alt);
+  border-color: var(--cat-color-border-faint);
+  color: var(--cat-color-heading);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 7%, transparent),
+    0 2px 8px -4px rgba(0, 0, 0, 0.5);
+}
+.cat-ctab__close {
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+.cat-ctab:hover .cat-ctab__close,
+.cat-ctab--active .cat-ctab__close {
+  opacity: 1;
+}
+
+/* ── Navigation tree: pill rows on the backdrop ──────────────────────── */
+.cat-sidebar,
+[data-theme-mode="dark"] .cat-sidebar {
+  background: transparent;
+  border-right: none;
+  padding: 6px 4px 6px 0;
+}
+.cat-sidebar__cluster-row {
+  font-weight: 600;
+  color: var(--cat-color-heading);
+}
+.cat-tree-row,
+.cat-sidebar__resource-row {
+  border-radius: 8px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.cat-sidebar__group-row {
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+.cat-sidebar__resource-row--active,
+[data-theme-mode="dark"] .cat-sidebar__resource-row--active {
+  background: color-mix(in srgb, var(--cat-color-accent) 16%, transparent) !important;
+  color: var(--cat-color-heading) !important;
+  box-shadow: none;
+}
+.cat-sidebar__resource-row--active svg {
+  color: var(--cat-color-accent);
+}
+
+/* ── Tables: tinted selection, softer chrome ─────────────────────────── */
+.cat-data-table [data-slot="table-header"],
+[data-theme-mode="dark"] .cat-data-table [data-slot="table-header"] {
+  background: color-mix(in srgb, var(--cat-color-surface) 72%, var(--cat-color-bg));
+  backdrop-filter: blur(6px);
+}
+.cat-data-table--interactive .cat-data-table__row:hover,
+[data-theme-mode="dark"] .cat-data-table--interactive .cat-data-table__row:hover {
+  background: color-mix(in srgb, var(--cat-color-accent) 9%, transparent);
+}
+.cat-table tbody tr[aria-selected="true"],
+.cat-nav__item--active {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--cat-color-accent) 14%, transparent);
+}
+
+/* ── Bottom dock: pill tabs, soft top edge ───────────────────────────── */
+.cat-dock {
+  border-top: 1px solid var(--cat-color-border-faint);
+  box-shadow: 0 -10px 24px -18px rgba(0, 0, 0, 0.6);
+}
+.cat-dock__tab {
+  border-radius: 8px;
+  margin: 4px 2px;
+  transition: background 130ms ease, color 130ms ease;
+}
+
+/* ── Status bar: floats on the backdrop, chip-like content ───────────── */
+.cat-statusbar {
+  border-top: none !important;
+  background: transparent !important;
+  padding-top: 2px;
+}
+
+/* ── Split view refinements on the card ──────────────────────────────── */
+.cat-pane-divider {
+  background: var(--cat-color-border-faint);
+}
+.cat-deck .cat-pane--focused {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cat-pane-ring) 40%, transparent);
+  border-radius: calc(var(--cat-card-radius) - 2px);
+}
+
+/* ── Global smoothing ────────────────────────────────────────────────── */
+button,
+[role="tab"],
+[role="menuitem"] {
+  transition-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+}

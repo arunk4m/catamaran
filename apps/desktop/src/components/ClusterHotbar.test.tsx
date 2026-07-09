@@ -12,7 +12,7 @@ import { ClusterHotbar } from "./ClusterHotbar";
 
 beforeEach(() => listContextsMock.mockReset());
 
-const theme = { name: "slate" as const, mode: "dark" as const };
+const theme = { name: "dusk" as const, mode: "dark" as const };
 
 describe("ClusterHotbar", () => {
   it("renders an avatar per cluster and opens one on click", async () => {
@@ -70,5 +70,45 @@ describe("ClusterHotbar", () => {
     );
     fireEvent.click(screen.getByLabelText("Open settings"));
     expect(onOpenSettings).toHaveBeenCalled();
+  });
+});
+
+describe("fleet indicators", () => {
+  it("marks contexts that are open in the deck with an aboard dot", async () => {
+    listContextsMock.mockResolvedValue({
+      contexts: [
+        { name: "kind-dev", cluster: "k", server: "s", isCurrent: true },
+        { name: "prod", cluster: "p", server: "s", isCurrent: false },
+      ],
+    });
+    render(
+      <ClusterHotbar
+        openContext="kind-dev"
+        onOpenContext={() => {}}
+        theme={theme}
+        onToggleTheme={() => {}}
+        onOpenSettings={() => {}}
+        openContexts={["kind-dev"]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText("kind-dev")).toBeDefined());
+    expect(screen.getByTestId("aboard-kind-dev")).toBeDefined();
+    expect(screen.queryByTestId("aboard-prod")).toBeNull();
+  });
+
+  it("labels each context under its avatar", async () => {
+    listContextsMock.mockResolvedValue({
+      contexts: [{ name: "production-eu", cluster: "p", server: "s", isCurrent: false }],
+    });
+    render(
+      <ClusterHotbar
+        openContext={null}
+        onOpenContext={() => {}}
+        theme={theme}
+        onToggleTheme={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("production-eu")).toBeDefined());
   });
 });
