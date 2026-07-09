@@ -181,10 +181,10 @@ pub(crate) fn tally_pod_phases<'a>(phases: impl Iterator<Item = Option<&'a str>>
     counts
 }
 
-/// Page size for phase counting: each page reads quickly from the apiserver's
-/// watch cache, where one giant unpaginated LIST can stall for many seconds on
-/// large clusters.
-const COUNT_PAGE_SIZE: u32 = 500;
+/// Page size for phase counting: modest pages keep per-request work small so
+/// the walk survives a degraded or scaling control plane, where one giant
+/// unpaginated LIST (or a too-big page) stalls past any interactive budget.
+const COUNT_PAGE_SIZE: u32 = 250;
 
 /// `k8s.podCounts` — phase counts for a namespace (or the whole cluster).
 ///
@@ -215,10 +215,16 @@ pub fn pod_counts_capability(cache: Arc<ClientCache>) -> Capability {
                         if let Some(token) = &continue_token {
                             params = params.continue_token(token);
                         }
-                        let page = tokio::time::timeout(request_timeout(), api.list(&params))
-                            .await
-                            .map_err(|_| CapabilityError::Handler("count pods timed out".into()))?
-                            .map_err(handler_err)?;
+                        // A page is size-bounded, so its cost is one apiserver
+                        // round trip — give it slack for a slow replica rather
+                        // than failing the whole count on one cold request.
+                        let page = tokio::time::timeout(
+                            request_timeout().saturating_mul(2),
+                            api.list(&params),
+                        )
+                        .await
+                        .map_err(|_| CapabilityError::Handler("count pods timed out".into()))?
+                        .map_err(handler_err)?;
                         tally_into(
                             &mut counts,
                             page.items.iter().map(|pod| {
@@ -233,7 +239,7 @@ pub fn pod_counts_capability(cache: Arc<ClientCache>) -> Capability {
                     Ok::<_, CapabilityError>(counts)
                 };
 
-                let budget = request_timeout().saturating_mul(3);
+                let budget = request_timeout().saturating_mul(4);
                 tokio::time::timeout(budget, walk)
                     .await
                     .map_err(|_| CapabilityError::Handler("count pods timed out".into()))?
