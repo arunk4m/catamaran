@@ -159,3 +159,20 @@ describe("deck layout", () => {
     expect(loadDeckLayout()).toEqual(DEFAULT_DECK_LAYOUT);
   });
 });
+
+describe("AWS access portal", () => {
+  it("round-trips a configured portal URL", async () => {
+    const { loadAwsPortalUrl, saveAwsPortalUrl } = await import("./settings");
+    expect(loadAwsPortalUrl()).toBe("");
+    saveAwsPortalUrl("https://deepinsightai.awsapps.com/start/#/");
+    expect(loadAwsPortalUrl()).toBe("https://deepinsightai.awsapps.com/start/#/");
+  });
+
+  it("treats non-web values as unset", async () => {
+    const { loadAwsPortalUrl, saveAwsPortalUrl } = await import("./settings");
+    saveAwsPortalUrl("javascript:alert(1)");
+    expect(loadAwsPortalUrl()).toBe("");
+    saveAwsPortalUrl("   ");
+    expect(loadAwsPortalUrl()).toBe("");
+  });
+});

@@ -143,6 +143,106 @@ pub fn list_pods_capability(cache: Arc<ClientCache>) -> Capability {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PodCountsIn {
+    pub context: String,
+    /// Namespace to count in ("" = all namespaces).
+    #[serde(default)]
+    pub namespace: String,
+}
+
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct PodCountsOut {
+    pub total: usize,
+    pub running: usize,
+    pub pending: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub unknown: usize,
+}
+
+/// Fold pod phases into an existing tally.
+pub(crate) fn tally_into<'a>(counts: &mut PodCountsOut, phases: impl Iterator<Item = Option<&'a str>>) {
+    for phase in phases {
+        counts.total += 1;
+        match phase {
+            Some("Running") => counts.running += 1,
+            Some("Pending") => counts.pending += 1,
+            Some("Succeeded") => counts.succeeded += 1,
+            Some("Failed") => counts.failed += 1,
+            _ => counts.unknown += 1,
+        }
+    }
+}
+
+/// Tally pod phases from a typed list without building per-pod summaries.
+pub(crate) fn tally_pod_phases<'a>(phases: impl Iterator<Item = Option<&'a str>>) -> PodCountsOut {
+    let mut counts = PodCountsOut::default();
+    tally_into(&mut counts, phases);
+    counts
+}
+
+/// Page size for phase counting: each page reads quickly from the apiserver's
+/// watch cache, where one giant unpaginated LIST can stall for many seconds on
+/// large clusters.
+const COUNT_PAGE_SIZE: u32 = 500;
+
+/// `k8s.podCounts` — phase counts for a namespace (or the whole cluster).
+///
+/// Purpose-built for at-a-glance dashboards: on large clusters, shipping every
+/// pod row across the bridge just to count phases is megabytes of overhead —
+/// the count happens here (paginated) and five integers cross instead. The
+/// page walk gets a wider budget than one interactive request: dashboards
+/// tolerate a slow count, and each page is still individually bounded.
+pub fn pod_counts_capability(cache: Arc<ClientCache>) -> Capability {
+    Capability::typed::<PodCountsIn, PodCountsOut, _, _>(
+        "k8s.podCounts",
+        "count pods by phase in a namespace (\"\" = cluster-wide) of a connected kube context",
+        Annotations::READ_ONLY,
+        move |input: PodCountsIn| {
+            let cache = cache.clone();
+            async move {
+                let client = cache
+                    .get(&input.context)
+                    .await
+                    .map_err(CapabilityError::Handler)?;
+                let api: Api<Pod> = crate::scoped_api(client, &input.namespace);
+
+                let walk = async {
+                    let mut counts = PodCountsOut::default();
+                    let mut continue_token: Option<String> = None;
+                    loop {
+                        let mut params = ListParams::default().limit(COUNT_PAGE_SIZE);
+                        if let Some(token) = &continue_token {
+                            params = params.continue_token(token);
+                        }
+                        let page = tokio::time::timeout(request_timeout(), api.list(&params))
+                            .await
+                            .map_err(|_| CapabilityError::Handler("count pods timed out".into()))?
+                            .map_err(handler_err)?;
+                        tally_into(
+                            &mut counts,
+                            page.items.iter().map(|pod| {
+                                pod.status.as_ref().and_then(|status| status.phase.as_deref())
+                            }),
+                        );
+                        match page.metadata.continue_ {
+                            Some(token) if !token.is_empty() => continue_token = Some(token),
+                            _ => break,
+                        }
+                    }
+                    Ok::<_, CapabilityError>(counts)
+                };
+
+                let budget = request_timeout().saturating_mul(3);
+                tokio::time::timeout(budget, walk)
+                    .await
+                    .map_err(|_| CapabilityError::Handler("count pods timed out".into()))?
+            }
+        },
+    )
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PodsForSelectorIn {
     pub context: String,
     pub namespace: String,
@@ -204,7 +304,29 @@ mod tests {
             "k8s.listNamespaces"
         );
         assert_eq!(list_pods_capability(cache.clone()).id, "k8s.listPods");
+        assert_eq!(pod_counts_capability(cache.clone()).id, "k8s.podCounts");
+        assert!(pod_counts_capability(cache.clone()).annotations.read_only);
         assert_eq!(pods_for_selector_capability(cache).id, "k8s.podsForSelector");
+    }
+
+    #[test]
+    fn tallies_pod_phases_including_unknowns() {
+        let phases = [
+            Some("Running"),
+            Some("Running"),
+            Some("Pending"),
+            Some("Succeeded"),
+            Some("Failed"),
+            Some("SomethingNew"),
+            None,
+        ];
+        let counts = tally_pod_phases(phases.into_iter());
+        assert_eq!(counts.total, 7);
+        assert_eq!(counts.running, 2);
+        assert_eq!(counts.pending, 1);
+        assert_eq!(counts.succeeded, 1);
+        assert_eq!(counts.failed, 1);
+        assert_eq!(counts.unknown, 2);
     }
 
     #[test]

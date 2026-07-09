@@ -215,6 +215,29 @@ export function saveContextOrder(order: string[]): void {
   }
 }
 
+const AWS_PORTAL_KEY = "catamaran.awsPortalUrl";
+
+/**
+ * The configured AWS access-portal URL ("" = not configured). Only http(s)
+ * values are accepted; anything else is treated as unset.
+ */
+export function loadAwsPortalUrl(): string {
+  try {
+    const raw = stored(AWS_PORTAL_KEY) ?? "";
+    return /^https?:\/\//.test(raw) ? raw : "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveAwsPortalUrl(url: string): void {
+  try {
+    localStorage.setItem(AWS_PORTAL_KEY, url.trim());
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
 const DECK_KEY = "catamaran.deck";
 
 /** Persisted split-screen deck layout: split on/off, pane ratio, linked nav. */

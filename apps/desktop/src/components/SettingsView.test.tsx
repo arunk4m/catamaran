@@ -327,3 +327,52 @@ describe("SettingsView", () => {
     expect(await screen.findByText(/endpoint unreachable/)).toBeDefined();
   });
 });
+
+const { ssoProfilesMock2, ssoLoginMock2 } = vi.hoisted(() => ({
+  ssoProfilesMock2: vi.fn(),
+  ssoLoginMock2: vi.fn(),
+}));
+vi.mock("../lib/aws", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/aws")>();
+  return { ...actual, ssoProfiles: ssoProfilesMock2, ssoLogin: ssoLoginMock2, openExternalUrl: vi.fn() };
+});
+
+describe("Cloud access section", () => {
+  it("edits the portal URL and refreshes a discovered profile", async () => {
+    ssoProfilesMock2.mockResolvedValue({
+      profiles: [{ profile: "tusk-dev", contexts: ["dev-eks", "tusk-dev"] }],
+    });
+    ssoLoginMock2.mockResolvedValue({ ok: true });
+    const onAwsPortalUrlChange = vi.fn();
+    render(
+      <SettingsView
+        theme={{ name: "dusk", mode: "dark" }}
+        onThemeNameChange={() => {}}
+        onThemeModeChange={() => {}}
+        defaultNamespace=""
+        onDefaultNamespaceChange={() => {}}
+        layout={DEFAULT_WORKSPACE_LAYOUT}
+        onLayoutChange={() => {}}
+        contextProfiles={{}}
+        onContextProfilesChange={() => {}}
+        kubeconfigFiles={[]}
+        onKubeconfigFilesChange={() => {}}
+        contextOrder={[]}
+        onContextOrderChange={() => {}}
+        awsPortalUrl="https://deepinsightai.awsapps.com/start/#/"
+        onAwsPortalUrlChange={onAwsPortalUrlChange}
+        initialSection="cloud"
+      />,
+    );
+
+    const input = await screen.findByRole("textbox", { name: "AWS access portal URL" });
+    expect((input as HTMLInputElement).value).toBe("https://deepinsightai.awsapps.com/start/#/");
+    fireEvent.change(input, { target: { value: "https://other.awsapps.com/start" } });
+    expect(onAwsPortalUrlChange).toHaveBeenCalledWith("https://other.awsapps.com/start");
+
+    // Discovered profile renders with its contexts and can be refreshed.
+    expect(await screen.findByText("tusk-dev", { selector: "code" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: /Refresh/ }));
+    await waitFor(() => expect(ssoLoginMock2).toHaveBeenCalledWith("tusk-dev"));
+  });
+});

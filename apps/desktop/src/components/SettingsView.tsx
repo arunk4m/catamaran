@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Boxes,
   Check,
+  Cloud,
   Download,
+  ExternalLink,
   LayoutPanelLeft,
   Monitor,
   Moon,
@@ -10,6 +12,7 @@ import {
   Palette,
   PanelLeft,
   PanelRight,
+  RefreshCw,
   RotateCcw,
   Sun,
   Timer,
@@ -26,6 +29,7 @@ import {
   PageHeader,
   PageShell,
   SectionPanel,
+  Spinner,
   TextInput,
   Button,
   THEME_OPTIONS,
@@ -34,6 +38,8 @@ import {
   type ThemeName,
 } from "../ui";
 import { listContexts, type ClusterContext } from "../lib/clusters";
+import { ssoProfiles, ssoLogin, openExternalUrl, type SsoProfileInfo } from "../lib/aws";
+import { notify } from "../lib/notify";
 import {
   DEFAULT_WORKSPACE_LAYOUT,
   REQUEST_TIMEOUT,
@@ -60,7 +66,14 @@ const MODE_OPTIONS: Array<{ mode: ThemeMode; label: string; description: string;
   { mode: "system", label: "System", description: "Follow the OS appearance", icon: Monitor },
 ];
 
-export type SettingsSection = "appearance" | "layout" | "kubernetes" | "contexts" | "mcp" | "updates";
+export type SettingsSection =
+  | "appearance"
+  | "layout"
+  | "kubernetes"
+  | "contexts"
+  | "cloud"
+  | "mcp"
+  | "updates";
 
 type UpdatePhase =
   | { phase: "idle" }
@@ -86,6 +99,7 @@ const SETTINGS_SECTIONS: Array<{
   { id: "layout", label: "Layout", description: "Panel dimensions", icon: LayoutPanelLeft },
   { id: "kubernetes", label: "Kubernetes", description: "Workspace defaults", icon: Network },
   { id: "contexts", label: "Contexts", description: "Names, logos and colors", icon: Boxes },
+  { id: "cloud", label: "Cloud access", description: "AWS access portal and SSO", icon: Cloud },
   { id: "mcp", label: "MCP", description: "Agent access and client config", icon: Plug },
   { id: "updates", label: "Updates", description: "App version and updates", icon: Download },
 ];
@@ -106,6 +120,8 @@ export function SettingsView({
   onKubeconfigFilesChange,
   contextOrder,
   onContextOrderChange,
+  awsPortalUrl = "",
+  onAwsPortalUrlChange = () => {},
   initialSection = "appearance",
 }: {
   theme: Theme;
@@ -121,6 +137,9 @@ export function SettingsView({
   onKubeconfigFilesChange: (paths: string[]) => void;
   contextOrder: string[];
   onContextOrderChange: (order: string[]) => void;
+  /** Configured AWS access-portal URL ("" = not configured). */
+  awsPortalUrl?: string;
+  onAwsPortalUrlChange?: (url: string) => void;
   /** Section to open on mount (e.g. deep-linked from the update toast). */
   initialSection?: SettingsSection;
 }) {
@@ -140,8 +159,30 @@ export function SettingsView({
   const [updateChannel, setUpdateChannel] = useState<UpdateChannel>(() => loadUpdateChannel());
   const [currentVersion, setCurrentVersion] = useState("");
   const [requestTimeout, setRequestTimeout] = useState(() => getRequestTimeoutSecs());
+  // SSO profiles pinned by kubeconfig exec blocks (loaded when Cloud opens).
+  const [ssoProfileList, setSsoProfileList] = useState<SsoProfileInfo[] | null>(null);
+  const [ssoBusyProfile, setSsoBusyProfile] = useState<string | null>(null);
   const draggedContextRef = useRef<string | null>(null);
   const dropTargetRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (section !== "cloud") return;
+    let active = true;
+    void ssoProfiles(kubeconfigFiles).then((outcome) => {
+      if (active) setSsoProfileList(outcome.profiles ?? []);
+    });
+    return () => {
+      active = false;
+    };
+  }, [section, kubeconfigFiles]);
+
+  async function refreshSsoProfile(profile: string) {
+    setSsoBusyProfile(profile);
+    const outcome = await ssoLogin(profile);
+    setSsoBusyProfile(null);
+    if (outcome.ok) notify.success(`AWS access refreshed for ${profile} — clusters will reconnect`);
+    else notify.error(outcome.error ?? "AWS SSO login failed");
+  }
 
   useEffect(() => {
     let active = true;
@@ -763,6 +804,66 @@ export function SettingsView({
                   )}
                 </div>
               )}
+            </SectionPanel>
+          )}
+
+          {section === "cloud" && (
+            <SectionPanel
+              title="AWS access portal"
+              description="Point Catamaran at your IAM Identity Center portal. Refreshing a profile runs `aws sso login`, which opens the portal in your browser for approval — afterwards every cluster reconnects with fresh credentials."
+            >
+              <label className="cat-settings-field">
+                <span>Access portal URL</span>
+                <TextInput
+                  value={awsPortalUrl}
+                  onValueChange={onAwsPortalUrlChange}
+                  placeholder="https://your-org.awsapps.com/start/#/"
+                  aria-label="AWS access portal URL"
+                />
+              </label>
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!awsPortalUrl}
+                  onClick={() => void openExternalUrl(awsPortalUrl)}
+                >
+                  <ExternalLink data-icon="inline-start" />
+                  Open portal
+                </Button>
+              </div>
+
+              <div className="cat-sso-profiles">
+                <span>
+                  <strong>Kubeconfig SSO profiles</strong>
+                  <small>Profiles pinned by kubeconfig exec blocks — refresh one to renew its session.</small>
+                </span>
+                {ssoProfileList === null ? (
+                  <Spinner label="Scanning kubeconfig" />
+                ) : ssoProfileList.length === 0 ? (
+                  <p className="cat-sso-profiles__empty">
+                    No AWS_PROFILE pins found in your kubeconfig exec blocks.
+                  </p>
+                ) : (
+                  <ul>
+                    {ssoProfileList.map((entry) => (
+                      <li key={entry.profile}>
+                        <code>{entry.profile}</code>
+                        <small>{entry.contexts.join(", ")}</small>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={ssoBusyProfile !== null}
+                          onClick={() => void refreshSsoProfile(entry.profile)}
+                        >
+                          <RefreshCw data-icon="inline-start" />
+                          {ssoBusyProfile === entry.profile ? "Waiting for approval…" : "Refresh"}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </SectionPanel>
           )}
 

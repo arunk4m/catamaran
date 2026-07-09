@@ -4,7 +4,7 @@ import React from "react";
 
 const mocks = vi.hoisted(() => ({
   listNamespaces: vi.fn(),
-  listPods: vi.fn(),
+  podCounts: vi.fn(),
   listNodes: vi.fn(),
   listResource: vi.fn(),
   listEvents: vi.fn(),
@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../lib/workloads", () => ({
   listNamespaces: mocks.listNamespaces,
-  listPods: mocks.listPods,
+  podCounts: mocks.podCounts,
 }));
 
 vi.mock("../lib/manifest", () => ({
@@ -27,11 +27,15 @@ beforeEach(() => {
   clearClusterOverviewCache();
   Object.values(mocks).forEach((mock) => mock.mockReset());
   mocks.listNodes.mockResolvedValue({ nodes: [{ status: "Ready" }] });
-  mocks.listPods.mockResolvedValue({ pods: [{ phase: "Running" }] });
+  mocks.podCounts.mockResolvedValue({
+    counts: { total: 1, running: 1, pending: 0, succeeded: 0, failed: 0, unknown: 0 },
+  });
   mocks.listResource.mockResolvedValue({ items: [{ name: "one" }] });
   mocks.listNamespaces.mockResolvedValue({ namespaces: ["default"] });
   mocks.listEvents.mockResolvedValue({ events: [] });
 });
+
+const TIMEOUT = "handler error: count pods timed out";
 
 describe("ClusterOverview cache", () => {
   it("reuses a fresh per-context snapshot after the page remounts", async () => {
@@ -42,7 +46,8 @@ describe("ClusterOverview cache", () => {
     render(<ClusterOverview context="kind-dev" />);
     expect(screen.getAllByText("1 / 1")).toHaveLength(2);
     expect(mocks.listNodes).toHaveBeenCalledTimes(1);
-    expect(mocks.listPods).toHaveBeenCalledTimes(1);
+    expect(mocks.podCounts).toHaveBeenCalledTimes(1);
+    expect(mocks.podCounts).toHaveBeenCalledWith("kind-dev", "");
     expect(mocks.listResource).toHaveBeenCalledTimes(2);
   });
 
@@ -56,9 +61,45 @@ describe("ClusterOverview cache", () => {
   });
 });
 
+describe("ClusterOverview partial degradation", () => {
+  it("renders the dashboard with a dash when one count fails", async () => {
+    mocks.podCounts.mockResolvedValue({ error: TIMEOUT });
+
+    render(<ClusterOverview context="tusk-dev" />);
+
+    // The rest of the dashboard still renders (nodes tile shows 1 / 1)…
+    expect(await screen.findByText("1 / 1")).toBeDefined();
+    // …the pods tile degrades to a dash with a note, not a full-page error…
+    expect(screen.getByText("—")).toBeDefined();
+    expect(screen.getByText(/pods unavailable/)).toBeDefined();
+    expect(screen.getByText("Pod counts unavailable")).toBeDefined();
+    // …and the unreachable card never appears.
+    expect(screen.queryByText("Can't reach the cluster")).toBeNull();
+  });
+
+  it("recovers the missing section on refresh", async () => {
+    mocks.podCounts.mockResolvedValueOnce({ error: TIMEOUT });
+
+    render(<ClusterOverview context="tusk-dev" />);
+    expect(await screen.findByText(/pods unavailable/)).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh cluster overview" }));
+    await waitFor(() => expect(screen.getAllByText("1 / 1")).toHaveLength(2));
+    expect(screen.queryByText(/pods unavailable/)).toBeNull();
+  });
+});
+
 describe("ClusterOverview error handling", () => {
-  it("renders a friendly connectivity message on a connection timeout", async () => {
-    mocks.listNamespaces.mockResolvedValue({ error: "handler error: list namespaces timed out" });
+  function failEverything() {
+    mocks.listNodes.mockResolvedValue({ error: TIMEOUT });
+    mocks.podCounts.mockResolvedValue({ error: TIMEOUT });
+    mocks.listResource.mockResolvedValue({ error: TIMEOUT });
+    mocks.listNamespaces.mockResolvedValue({ error: TIMEOUT });
+    mocks.listEvents.mockResolvedValue({ error: TIMEOUT });
+  }
+
+  it("shows the friendly connectivity card only when every section fails", async () => {
+    failEverything();
 
     render(<ClusterOverview context="kind-unreachable" />);
 
@@ -69,14 +110,21 @@ describe("ClusterOverview error handling", () => {
   });
 
   it("retries the load when the user clicks Retry", async () => {
-    mocks.listNamespaces.mockResolvedValueOnce({
-      error: "handler error: list namespaces timed out",
-    });
+    failEverything();
 
     render(<ClusterOverview context="kind-flaky" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Can't reach the cluster")).toBeDefined();
 
-    // Second attempt succeeds with the default healthy mocks.
+    // Second attempt succeeds with healthy responses.
+    mocks.listNodes.mockResolvedValue({ nodes: [{ status: "Ready" }] });
+    mocks.podCounts.mockResolvedValue({
+      counts: { total: 1, running: 1, pending: 0, succeeded: 0, failed: 0, unknown: 0 },
+    });
+    mocks.listResource.mockResolvedValue({ items: [{ name: "one" }] });
+    mocks.listNamespaces.mockResolvedValue({ namespaces: ["default"] });
+    mocks.listEvents.mockResolvedValue({ events: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findAllByText("1 / 1")).toHaveLength(2);
   });
 });
