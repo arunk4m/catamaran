@@ -43,7 +43,7 @@ describe("LogsView", () => {
     render(<LogsView context="kind-dev" namespace="default" source={{ type: "pod", pod: "web-1" }} />);
     await waitFor(() => expect(screen.getByText(/line two/)).toBeDefined());
     await waitFor(() =>
-      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-1", undefined, "app"),
+      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-1", undefined, "app", expect.any(Object)),
     );
   });
 
@@ -79,10 +79,10 @@ describe("LogsView", () => {
     // A pod picker appears with an "all pods" option, and logs are fetched per pod.
     expect(await screen.findByRole("combobox", { name: "Pod" })).toBeDefined();
     await waitFor(() =>
-      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-1", undefined, "app"),
+      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-1", undefined, "app", expect.any(Object)),
     );
     await waitFor(() =>
-      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-2", undefined, "app"),
+      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-2", undefined, "app", expect.any(Object)),
     );
   });
 
@@ -147,6 +147,7 @@ describe("LogsView", () => {
         [{ pod: "web-1", container: "app", label: "" }],
         expect.any(Function),
         expect.any(Function),
+        expect.any(Object),
       ),
     );
   });
@@ -192,7 +193,58 @@ describe("LogsView", () => {
     await userEvent.click(screen.getByRole("combobox", { name: "Container" }));
     await userEvent.click(await screen.findByRole("option", { name: "sidecar" }));
     await waitFor(() =>
-      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-1", undefined, "sidecar"),
+      expect(podLogsMock).toHaveBeenCalledWith("kind-dev", "default", "web-1", undefined, "sidecar", expect.any(Object)),
+    );
+  });
+});
+
+describe("log window, timestamps, and previous instance", () => {
+  it("decodes window selections", async () => {
+    const { windowOptions } = await import("./LogsView");
+    expect(windowOptions("tail:1000")).toEqual({ tailLines: 1000 });
+    expect(windowOptions("since:3600")).toEqual({ sinceSeconds: 3600 });
+    expect(windowOptions("junk:x")).toEqual({ tailLines: 200 });
+  });
+
+  it("refetches with the previous-instance flag and disables follow", async () => {
+    podLogsMock.mockResolvedValue({ logs: "old instance line" });
+    render(
+      <LogsView context="kind-dev" namespace="default" source={{ type: "pod", pod: "web-1" }} />,
+    );
+    await waitFor(() => expect(podLogsMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByLabelText("Show previous instance"));
+    await waitFor(() =>
+      expect(podLogsMock).toHaveBeenCalledWith(
+        "kind-dev",
+        "default",
+        "web-1",
+        undefined,
+        "app",
+        expect.objectContaining({ previous: true }),
+      ),
+    );
+    expect(screen.getByText("previous instance")).toBeDefined();
+    expect(screen.getByLabelText("Live tail")).toHaveProperty("disabled", true);
+  });
+
+  it("passes timestamps through to snapshots", async () => {
+    podLogsMock.mockResolvedValue({ logs: "2026-07-09T10:00:00Z hello" });
+    render(
+      <LogsView context="kind-dev" namespace="default" source={{ type: "pod", pod: "web-1" }} />,
+    );
+    await waitFor(() => expect(podLogsMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByLabelText("Show timestamps"));
+    await waitFor(() =>
+      expect(podLogsMock).toHaveBeenCalledWith(
+        "kind-dev",
+        "default",
+        "web-1",
+        undefined,
+        "app",
+        expect.objectContaining({ timestamps: true }),
+      ),
     );
   });
 });

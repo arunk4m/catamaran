@@ -130,3 +130,34 @@ describe("deletePod", () => {
     expect(outcome.error).toContain("forbidden");
   });
 });
+
+describe("podLogs window options", () => {
+  it("passes tail, timestamps, and previous through to the capability", async () => {
+    const invoke = vi.fn().mockResolvedValue({ logs: "" });
+    await podLogs("kind-dev", "default", "web-1", invoke, "app", {
+      tailLines: 1000,
+      timestamps: true,
+      previous: true,
+    });
+    expect(invoke).toHaveBeenCalledWith("k8s.podLogs", {
+      context: "kind-dev",
+      namespace: "default",
+      pod: "web-1",
+      container: "app",
+      tail_lines: 1000,
+      timestamps: true,
+      previous: true,
+    });
+  });
+
+  it("passes a since window instead of a tail count", async () => {
+    const invoke = vi.fn().mockResolvedValue({ logs: "" });
+    await podLogs("kind-dev", "default", "web-1", invoke, undefined, { sinceSeconds: 3600 });
+    expect(invoke).toHaveBeenCalledWith("k8s.podLogs", {
+      context: "kind-dev",
+      namespace: "default",
+      pod: "web-1",
+      since_seconds: 3600,
+    });
+  });
+});

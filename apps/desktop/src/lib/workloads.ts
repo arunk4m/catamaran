@@ -202,6 +202,18 @@ export async function evictPod(
   }
 }
 
+/** Log-window options shared by snapshot fetches and live tails. */
+export interface LogWindowOptions {
+  /** Trailing lines to fetch (ignored when sinceSeconds is set). */
+  tailLines?: number;
+  /** Read from this many seconds ago instead of a line count. */
+  sinceSeconds?: number;
+  /** Prefix each line with its RFC3339 timestamp. */
+  timestamps?: boolean;
+  /** Read the previous (crashed/restarted) container instance. */
+  previous?: boolean;
+}
+
 /** Fetch recent logs for a pod (optionally a specific container) via `k8s.podLogs`. */
 export async function podLogs(
   context: string,
@@ -209,6 +221,7 @@ export async function podLogs(
   pod: string,
   invoke: Invoker = invokeCapability,
   container?: string,
+  options: LogWindowOptions = {},
 ): Promise<LogsOutcome> {
   try {
     const out = await invoke<{ logs: string }>("k8s.podLogs", {
@@ -216,6 +229,10 @@ export async function podLogs(
       namespace,
       pod,
       ...(container ? { container } : {}),
+      ...(options.tailLines != null ? { tail_lines: options.tailLines } : {}),
+      ...(options.sinceSeconds != null ? { since_seconds: options.sinceSeconds } : {}),
+      ...(options.timestamps ? { timestamps: true } : {}),
+      ...(options.previous ? { previous: true } : {}),
     });
     return { logs: out.logs };
   } catch (e) {

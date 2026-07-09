@@ -7,12 +7,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use catamaran_kube::client_cache::ClientCache;
-use catamaran_kube::logs::stream_pod_logs_resilient;
+use catamaran_kube::logs::{stream_pod_logs_resilient, LogOptions};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinHandle;
-
-const STREAM_TAIL_LINES: i64 = 200;
 
 /// One pod/container to follow, with a display label for prefixing lines when
 /// several targets share a stream.
@@ -69,6 +67,9 @@ pub async fn start_log_stream(
     namespace: String,
     targets: Vec<LogTarget>,
     channel: String,
+    tail_lines: Option<i64>,
+    since_seconds: Option<i64>,
+    timestamps: Option<bool>,
     app: AppHandle,
     manager: State<'_, LogStreamManager>,
 ) -> Result<(), String> {
@@ -76,6 +77,12 @@ pub async fn start_log_stream(
         return Err("cannot start live logs without a pod target".into());
     }
     manager.abort(&channel);
+
+    let opts = LogOptions {
+        tail_lines,
+        since_seconds,
+        timestamps: timestamps.unwrap_or(false),
+    };
 
     let handles = targets
         .into_iter()
@@ -95,7 +102,7 @@ pub async fn start_log_stream(
                     namespace,
                     t.pod,
                     t.container,
-                    STREAM_TAIL_LINES,
+                    opts,
                     move |line| {
                         let _ = line_app.emit(
                             &line_channel,
