@@ -856,6 +856,7 @@ export function App() {
         contextProfiles={contextProfiles}
         kubeconfigFiles={kubeconfigFiles}
         contextOrder={contextOrder}
+        openContexts={clusters}
       />
       {anyCluster && (
         <Sidebar
@@ -906,6 +907,21 @@ export function App() {
         onOpenView={(kind) => (kind === "settings" ? openSettings() : activeCluster && openView(activeCluster, kind))}
         onOpenResource={openResource}
         onOpenCrd={(crd) => activeCluster && openCrdView(activeCluster, crd)}
+        actions={{
+          split,
+          linked: deck.linked,
+          hasContext: activeCluster != null,
+          onToggleSplit: toggleSplit,
+          onFocusOtherPane: () =>
+            setDeck((d) => {
+              const other = otherPane(d, d.focusedPaneId);
+              return other ? focusPane(d, other.id) : d;
+            }),
+          onToggleLinked: () => setDeck((d) => setLinked(d, !d.linked)),
+          onSwapPanes: () => setDeck((d) => swapPanes(d)),
+          onToggleTheme: toggleThemeMode,
+          onNewResource: () => openNewResource(),
+        }}
       />
       <Toaster position="top-right" richColors closeButton />
     </div>

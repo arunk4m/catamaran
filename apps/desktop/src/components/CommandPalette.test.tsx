@@ -95,3 +95,61 @@ describe("CommandPalette", () => {
     expect(onOpenCrd).toHaveBeenCalledWith(widgetCrd);
   });
 });
+
+describe("workspace actions", () => {
+  function setupWithActions(overrides: Partial<Parameters<typeof CommandPalette>[0]["actions"] & object> = {}) {
+    const actions = {
+      split: false,
+      linked: false,
+      hasContext: true,
+      onToggleSplit: vi.fn(),
+      onFocusOtherPane: vi.fn(),
+      onToggleLinked: vi.fn(),
+      onSwapPanes: vi.fn(),
+      onToggleTheme: vi.fn(),
+      onNewResource: vi.fn(),
+      ...overrides,
+    };
+    const onOpenChange = vi.fn();
+    render(
+      <CommandPalette
+        open
+        onOpenChange={onOpenChange}
+        context="kind-dev"
+        onOpenView={vi.fn()}
+        onOpenResource={vi.fn()}
+        onOpenCrd={vi.fn()}
+        actions={actions}
+      />,
+    );
+    return { actions, onOpenChange };
+  }
+
+  it("runs the split action and closes the palette", async () => {
+    const { actions, onOpenChange } = setupWithActions();
+    await userEvent.click(await screen.findByText("Split the Deck"));
+    expect(actions.onToggleSplit).toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("shows pane commands only when split", async () => {
+    setupWithActions({ split: true, linked: true });
+    expect(await screen.findByText("Close Split View")).toBeDefined();
+    expect(screen.getByText("Focus Other Pane")).toBeDefined();
+    expect(screen.getByText("Unlink Panes")).toBeDefined();
+    expect(screen.getByText("Swap Panes")).toBeDefined();
+  });
+
+  it("finds actions through fuzzy keywords", async () => {
+    const { actions } = setupWithActions();
+    await userEvent.type(screen.getByPlaceholderText("Search resources and views…"), "dark");
+    await userEvent.click(await screen.findByText("Toggle Light/Dark Theme"));
+    expect(actions.onToggleTheme).toHaveBeenCalled();
+  });
+
+  it("hides New Resource without a context", async () => {
+    setupWithActions({ hasContext: false });
+    await screen.findByText("Split the Deck");
+    expect(screen.queryByText("New Resource…")).toBeNull();
+  });
+});

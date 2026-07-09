@@ -48,10 +48,13 @@ export function ContextAvatar({
   const shortName = profile?.shortName?.trim().slice(0, 3).toUpperCase() ?? "";
   const label = shortName || avatarInitials(context);
   const showBadge = showShortName && logo !== "initials" && !!shortName;
+  // The context colour flows through a CSS variable so the design system can
+  // render soft-tint circles (background at low alpha, glyph in full colour).
+  const contextColor = profile?.color || avatarColor(context);
   return (
     <span
       className={`${className}${showBadge ? " cat-context-avatar--has-short" : ""}`}
-      style={{ background: profile?.color || avatarColor(context) }}
+      style={{ "--ctx-color": contextColor } as React.CSSProperties}
       aria-hidden="true"
     >
       {source && !imageFailed ? (

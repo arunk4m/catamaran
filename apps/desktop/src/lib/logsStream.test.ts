@@ -67,3 +67,32 @@ describe("startLogStream", () => {
     expect(invokeCommandMock).toHaveBeenCalledWith("stop_log_stream", { channel });
   });
 });
+
+describe("startLogStream window options", () => {
+  it("forwards tail/since/timestamps to the backend command", async () => {
+    subscribeMock.mockResolvedValue(vi.fn());
+    invokeCommandMock.mockResolvedValue(undefined);
+    await startLogStream(
+      "kind-dev",
+      "default",
+      [{ pod: "web-1" }],
+      vi.fn(),
+      undefined,
+      { sinceSeconds: 900, timestamps: true },
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "start_log_stream",
+      expect.objectContaining({ sinceSeconds: 900, tailLines: null, timestamps: true }),
+    );
+  });
+
+  it("defaults the window fields when no options are given", async () => {
+    subscribeMock.mockResolvedValue(vi.fn());
+    invokeCommandMock.mockResolvedValue(undefined);
+    await startLogStream("kind-dev", "default", [{ pod: "web-1" }], vi.fn());
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "start_log_stream",
+      expect.objectContaining({ tailLines: null, sinceSeconds: null, timestamps: false }),
+    );
+  });
+});
