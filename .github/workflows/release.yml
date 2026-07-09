@@ -7,9 +7,11 @@ name: Release
 #                committed back to main with [skip ci], then a stable
 #                `catamaran-v<version>` release is built. No manual bump needed; if
 #                there are no releasable commits the release is skipped.
+# Requires TAURI_SIGNING_PRIVATE_KEY(_PASSWORD) and Apple signing secrets.
+# Manual trigger until those are configured — flip back to push: [main, dev]
+# to restore automatic releases.
 on:
-  push:
-    branches: [main, dev]
+  workflow_dispatch:
 
 # Don't cancel an in-flight release run (it could leave partial assets).
 concurrency:
