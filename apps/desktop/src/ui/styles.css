@@ -4333,3 +4333,58 @@ button,
   font-size: 12.5px;
   margin: 0;
 }
+
+/* ── Spyglass: Kiali & Grafana launchers + observability settings ─────── */
+.cat-hotbar__actions-keel {
+  width: 22px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--cat-color-border-faint);
+}
+.cat-hotbar__spyglass:hover:not(:disabled) {
+  color: var(--cat-color-accent);
+}
+.cat-spyglass {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cat-spyglass__tool {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--cat-color-border-faint);
+  border-radius: var(--cat-radius-lg, 14px);
+  padding: 14px;
+}
+.cat-spyglass__tool-name {
+  display: flex;
+  flex-direction: column;
+}
+.cat-spyglass__tool-name strong {
+  color: var(--cat-color-heading);
+  font-size: 13px;
+}
+.cat-spyglass__tool-name small {
+  color: var(--cat-color-text-muted);
+  font-size: 12px;
+}
+.cat-spyglass__service {
+  display: grid;
+  grid-template-columns: 1fr 1fr 90px;
+  gap: 10px;
+}
+.cat-spyglass__hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+  color: var(--cat-color-text-muted);
+  font-size: 12.5px;
+}
+.cat-spyglass__hint code {
+  font-family: var(--cat-font-mono);
+  font-size: 12px;
+  color: var(--cat-color-text);
+}

@@ -6,6 +6,7 @@ mod forward;
 mod logs;
 mod mcp;
 mod settings;
+mod spyglass;
 mod updater;
 mod watch;
 
@@ -20,6 +21,7 @@ use mcp::{
     McpHttpManager,
 };
 use settings::{get_request_timeout, set_request_timeout};
+use spyglass::open_tool_window;
 use updater::{update_check, update_install};
 use watch::{start_resource_watch, stop_watch, WatchManager};
 
@@ -129,7 +131,18 @@ fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
 
     app.on_menu_event(move |app, event| {
         if event.id().as_ref() == CLOSE_TAB_MENU_ID {
-            let _ = app.emit("close-active-tab", ());
+            // In a spyglass (or any auxiliary) window, Cmd+W closes that
+            // window; only the main window routes it to tab-closing.
+            use tauri::Manager;
+            let focused_aux = app
+                .webview_windows()
+                .into_iter()
+                .find(|(label, w)| label != "main" && w.is_focused().unwrap_or(false));
+            if let Some((_, window)) = focused_aux {
+                let _ = window.close();
+            } else {
+                let _ = app.emit("close-active-tab", ());
+            }
         }
     });
 
@@ -191,6 +204,7 @@ pub fn run() {
             update_install,
             set_request_timeout,
             get_request_timeout,
+            open_tool_window,
             mcp_http_start,
             mcp_http_stop,
             mcp_http_status,

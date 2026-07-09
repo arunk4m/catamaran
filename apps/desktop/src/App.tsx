@@ -48,8 +48,13 @@ import {
   loadDeckLayout,
   loadAwsPortalUrl,
   saveAwsPortalUrl,
+  loadObservabilityConfig,
+  saveObservabilityConfig,
   saveDeckLayout,
+  type ObservabilityConfig,
+  type SpyglassTool,
 } from "./lib/settings";
+import { openSpyglassTool, SPYGLASS_LABELS } from "./lib/spyglass";
 import {
   createDeck,
   splitDeck,
@@ -131,6 +136,12 @@ export function App() {
   function changeAwsPortalUrl(url: string) {
     setAwsPortalUrl(url);
     saveAwsPortalUrl(url);
+  }
+  // Where Kiali and Grafana live (per-tool spyglass source).
+  const [observability, setObservability] = useState<ObservabilityConfig>(loadObservabilityConfig);
+  function changeObservability(config: ObservabilityConfig) {
+    setObservability(config);
+    saveObservabilityConfig(config);
   }
   const dockIdRef = useRef(1);
   const focusNonce = useRef(0);
@@ -310,6 +321,30 @@ export function App() {
   const activeTab = activeTabOf(pane);
   const activeCluster = activeTab?.cluster ?? null;
   const activeKind: ResourceKind = activeTab?.kind ?? "pods";
+
+  /**
+   * Open Kiali/Grafana in its dedicated window against the focused cluster.
+   * One loading toast tracks the whole voyage: discover → forward → probe →
+   * window; failures resolve it with the reason and a Settings pointer.
+   */
+  function openSpyglass(tool: SpyglassTool) {
+    const label = SPYGLASS_LABELS[tool];
+    const id = notify.loading(`Opening ${label}…`);
+    void openSpyglassTool(tool, activeCluster, observability[tool]).then((outcome) => {
+      if (outcome.opening) {
+        const via =
+          outcome.opening.via === "forward"
+            ? `port-forwarded to 127.0.0.1:${outcome.opening.localPort}`
+            : outcome.opening.url;
+        const auth = outcome.opening.probe?.authRedirect
+          ? " — sign in inside the window"
+          : "";
+        notify.resolve(id, true, `${label} is up`, `${via}${auth}`);
+      } else {
+        notify.resolve(id, false, `Couldn't open ${label}`, outcome.error);
+      }
+    });
+  }
   // Every cluster with an open tab, across both panes (drives the sidebar tree).
   const clusters = orderContexts(
     [...new Set(deck.panes.flatMap((p) => p.tabs.flatMap((t) => (t.cluster ? [t.cluster] : []))))].map(
@@ -747,6 +782,9 @@ export function App() {
                       onContextOrderChange={changeContextOrder}
                       awsPortalUrl={awsPortalUrl}
                       onAwsPortalUrlChange={changeAwsPortalUrl}
+                      observability={observability}
+                      onObservabilityChange={changeObservability}
+                      activeContext={activeCluster}
                     />
                   ) : paneActiveTab.crd && paneCluster ? (
                     <CustomResourceBrowser
@@ -863,6 +901,7 @@ export function App() {
         theme={theme}
         onToggleTheme={toggleThemeMode}
         onOpenSettings={openSettings}
+        onOpenSpyglass={openSpyglass}
         contextProfiles={contextProfiles}
         kubeconfigFiles={kubeconfigFiles}
         contextOrder={contextOrder}
@@ -932,6 +971,7 @@ export function App() {
           onSwapPanes: () => setDeck((d) => swapPanes(d)),
           onToggleTheme: toggleThemeMode,
           onNewResource: () => openNewResource(),
+          onOpenSpyglass: openSpyglass,
         }}
       />
       <Toaster position="top-right" richColors closeButton />

@@ -1,12 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { Moon, Settings, Sun } from "lucide-react";
+import { Gauge, Moon, Settings, Share2, Sun } from "lucide-react";
 import catamaranMark from "../assets/catamaran-mark.svg";
 import { listContexts, type ClusterContext } from "../lib/clusters";
 import {
   type Theme,
 } from "../ui";
 import { ContextAvatar } from "./ContextAvatar";
-import { contextDisplayName, orderContexts, type ContextProfiles } from "../lib/settings";
+import {
+  contextDisplayName,
+  orderContexts,
+  type ContextProfiles,
+  type SpyglassTool,
+} from "../lib/settings";
 
 const EMPTY_LIST: string[] = [];
 
@@ -22,6 +27,7 @@ export function ClusterHotbar({
   theme,
   onToggleTheme,
   onOpenSettings,
+  onOpenSpyglass,
   contextProfiles = {},
   kubeconfigFiles = EMPTY_LIST,
   contextOrder = EMPTY_LIST,
@@ -32,6 +38,8 @@ export function ClusterHotbar({
   theme: Theme;
   onToggleTheme: () => void;
   onOpenSettings: () => void;
+  /** Open an observability tool (Kiali / Grafana) in its dedicated window. */
+  onOpenSpyglass?: (tool: SpyglassTool) => void;
   contextProfiles?: ContextProfiles;
   kubeconfigFiles?: string[];
   contextOrder?: string[];
@@ -81,6 +89,27 @@ export function ClusterHotbar({
         })}
       </div>
       <div className="cat-hotbar__actions">
+        {onOpenSpyglass && (
+          <>
+            <button
+              className="cat-hotbar__theme cat-hotbar__spyglass"
+              aria-label="Open Kiali"
+              title="Open Kiali (service mesh)"
+              onClick={() => onOpenSpyglass("kiali")}
+            >
+              <Share2 aria-hidden="true" />
+            </button>
+            <button
+              className="cat-hotbar__theme cat-hotbar__spyglass"
+              aria-label="Open Grafana"
+              title="Open Grafana (dashboards)"
+              onClick={() => onOpenSpyglass("grafana")}
+            >
+              <Gauge aria-hidden="true" />
+            </button>
+            <span className="cat-hotbar__actions-keel" aria-hidden="true" />
+          </>
+        )}
         <button
           className="cat-hotbar__theme"
           aria-label={theme.mode === "dark" ? "Switch to light mode" : "Switch to dark mode"}

@@ -17,6 +17,12 @@ futures = "0.3"
 base64 = "0.22"
 flate2 = "1"
 http = "1"
+# rustls-no-provider: reqwest must ride the same rustls/ring crypto provider
+# as kube-rs — enabling reqwest's own (aws-lc-rs) makes rustls's provider
+# auto-detection ambiguous, which aborts the process on the first TLS client
+# build. The probe installs ring as the process default itself (spyglass.rs).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -176,3 +176,42 @@ describe("AWS access portal", () => {
     expect(loadAwsPortalUrl()).toBe("");
   });
 });
+
+describe("observability (spyglass) config", () => {
+  it("defaults both tools to auto-detect", async () => {
+    const { loadObservabilityConfig } = await import("./settings");
+    expect(loadObservabilityConfig()).toEqual({
+      kiali: { mode: "auto" },
+      grafana: { mode: "auto" },
+    });
+  });
+
+  it("round-trips pinned services and URLs", async () => {
+    const { loadObservabilityConfig, saveObservabilityConfig } = await import("./settings");
+    saveObservabilityConfig({
+      kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
+      grafana: { mode: "url", url: "https://grafana.example" },
+    });
+    expect(loadObservabilityConfig()).toEqual({
+      kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
+      grafana: { mode: "url", url: "https://grafana.example" },
+    });
+  });
+
+  it("sanitizes garbage back to auto", async () => {
+    const { loadObservabilityConfig } = await import("./settings");
+    localStorage.setItem("catamaran.observability", "not json");
+    expect(loadObservabilityConfig().kiali.mode).toBe("auto");
+
+    localStorage.setItem(
+      "catamaran.observability",
+      JSON.stringify({
+        kiali: { mode: "service", namespace: "x", service: "y", port: 99999 }, // port out of range
+        grafana: { mode: "url", url: "javascript:alert(1)" }, // non-web scheme
+      }),
+    );
+    const cfg = loadObservabilityConfig();
+    expect(cfg.kiali).toEqual({ mode: "auto" });
+    expect(cfg.grafana).toEqual({ mode: "auto" });
+  });
+});

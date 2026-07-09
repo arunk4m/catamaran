@@ -4,8 +4,10 @@ import {
   Braces,
   Columns2,
   FilePlus2,
+  Gauge,
   Link2,
   PanelRight,
+  Share2,
   SunMoon,
   type LucideIcon,
 } from "lucide-react";
@@ -36,6 +38,8 @@ export interface PaletteActions {
   onSwapPanes: () => void;
   onToggleTheme: () => void;
   onNewResource: () => void;
+  /** Open an observability tool window against the focused context. */
+  onOpenSpyglass?: (tool: "kiali" | "grafana") => void;
 }
 
 interface ActionItem {
@@ -97,6 +101,25 @@ function buildActions(actions: PaletteActions): ActionItem[] {
       icon: FilePlus2,
       run: actions.onNewResource,
     });
+  }
+  const openSpyglass = actions.onOpenSpyglass;
+  if (openSpyglass) {
+    items.push(
+      {
+        id: "act:kiali",
+        label: "Open Kiali",
+        keywords: "kiali istio mesh traffic graph observability spyglass",
+        icon: Share2,
+        run: () => openSpyglass("kiali"),
+      },
+      {
+        id: "act:grafana",
+        label: "Open Grafana",
+        keywords: "grafana dashboards metrics charts observability spyglass",
+        icon: Gauge,
+        run: () => openSpyglass("grafana"),
+      },
+    );
   }
   return items;
 }

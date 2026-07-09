@@ -112,3 +112,39 @@ describe("fleet indicators", () => {
     await waitFor(() => expect(screen.getByText("production-eu")).toBeDefined());
   });
 });
+
+describe("ClusterHotbar spyglass launchers", () => {
+  it("opens Kiali and Grafana through the spyglass handler", async () => {
+    listContextsMock.mockResolvedValue({ contexts: [] });
+    const onOpenSpyglass = vi.fn();
+    render(
+      <ClusterHotbar
+        openContext={null}
+        onOpenContext={() => {}}
+        theme={theme}
+        onToggleTheme={() => {}}
+        onOpenSettings={() => {}}
+        onOpenSpyglass={onOpenSpyglass}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Open Kiali"));
+    expect(onOpenSpyglass).toHaveBeenCalledWith("kiali");
+    fireEvent.click(screen.getByLabelText("Open Grafana"));
+    expect(onOpenSpyglass).toHaveBeenCalledWith("grafana");
+  });
+
+  it("hides the launchers when no handler is wired", async () => {
+    listContextsMock.mockResolvedValue({ contexts: [] });
+    render(
+      <ClusterHotbar
+        openContext={null}
+        onOpenContext={() => {}}
+        theme={theme}
+        onToggleTheme={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+    expect(screen.queryByLabelText("Open Kiali")).toBeNull();
+    expect(screen.queryByLabelText("Open Grafana")).toBeNull();
+  });
+});

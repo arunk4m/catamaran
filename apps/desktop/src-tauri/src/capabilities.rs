@@ -157,6 +157,16 @@ pub fn build_registry_with(cache: Arc<ClientCache>) -> Registry {
         default_kubeconfig_paths(),
     ));
     reg.register(catamaran_kube::sso::open_url_capability());
+
+    // Spyglass: observability tools (Kiali, Grafana) — discovery, keyed
+    // port-forwards, URL probing.
+    let forwards = catamaran_kube::spyglass::ForwardRegistry::new(cache.clone());
+    reg.register(catamaran_kube::spyglass::discover_capability(cache.clone()));
+    reg.register(catamaran_kube::spyglass::probe_capability());
+    reg.register(catamaran_kube::spyglass::port_forward_start_capability(forwards.clone()));
+    reg.register(catamaran_kube::spyglass::port_forward_stop_capability(forwards.clone()));
+    reg.register(catamaran_kube::spyglass::port_forward_list_capability(forwards));
+
     reg.register(catamaran_kube::manifest::list_resource_capability(cache));
 
     reg

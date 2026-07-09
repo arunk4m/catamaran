@@ -238,6 +238,71 @@ export function saveAwsPortalUrl(url: string): void {
   }
 }
 
+const OBSERVABILITY_KEY = "catamaran.observability";
+
+/** The observability tools the spyglass can open. */
+export type SpyglassTool = "kiali" | "grafana";
+
+/**
+ * Where a tool lives: `auto` discovers it in the focused cluster on open,
+ * `service` pins a namespace/service/port to port-forward, `url` uses an
+ * already-exposed address as-is.
+ */
+export type SpyglassSource =
+  | { mode: "auto" }
+  | { mode: "service"; namespace: string; service: string; port: number }
+  | { mode: "url"; url: string };
+
+export type ObservabilityConfig = Record<SpyglassTool, SpyglassSource>;
+
+export const DEFAULT_OBSERVABILITY: ObservabilityConfig = {
+  kiali: { mode: "auto" },
+  grafana: { mode: "auto" },
+};
+
+function sanitizeSource(value: unknown): SpyglassSource {
+  if (typeof value === "object" && value !== null) {
+    const v = value as Record<string, unknown>;
+    if (
+      v.mode === "service" &&
+      typeof v.namespace === "string" &&
+      typeof v.service === "string" &&
+      typeof v.port === "number" &&
+      Number.isInteger(v.port) &&
+      v.port > 0 &&
+      v.port <= 65535
+    ) {
+      return { mode: "service", namespace: v.namespace, service: v.service, port: v.port };
+    }
+    if (v.mode === "url" && typeof v.url === "string" && /^https?:\/\//.test(v.url)) {
+      return { mode: "url", url: v.url };
+    }
+  }
+  return { mode: "auto" };
+}
+
+export function loadObservabilityConfig(): ObservabilityConfig {
+  try {
+    const raw = stored(OBSERVABILITY_KEY);
+    if (!raw) return { ...DEFAULT_OBSERVABILITY };
+    const value = JSON.parse(raw) as Partial<Record<SpyglassTool, unknown>>;
+    return {
+      kiali: sanitizeSource(value.kiali),
+      grafana: sanitizeSource(value.grafana),
+    };
+  } catch {
+    return { ...DEFAULT_OBSERVABILITY };
+  }
+}
+
+export function saveObservabilityConfig(config: ObservabilityConfig): void {
+  try {
+    localStorage.setItem(OBSERVABILITY_KEY, JSON.stringify(config));
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
 const DECK_KEY = "catamaran.deck";
 
 /** Persisted split-screen deck layout: split on/off, pane ratio, linked nav. */
