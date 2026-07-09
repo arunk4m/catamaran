@@ -2,8 +2,20 @@ import React, { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { listCustomResource, type CrdRef, type CustomRow } from "../lib/crds";
 import { listNamespaces } from "../lib/workloads";
+import { loadHiddenColumns, saveHiddenColumns } from "../lib/settings";
 import { YamlView } from "./YamlView";
-import { Table, filterTableData, Select, Button, Spinner, Drawer, TextInput, type Column } from "../ui";
+import {
+  Table,
+  filterTableData,
+  Select,
+  Button,
+  ColumnPicker,
+  Spinner,
+  Drawer,
+  TextInput,
+  type Column,
+  type ColumnOption,
+} from "../ui";
 
 interface Selected {
   name: string;
@@ -35,6 +47,14 @@ export function CustomResourceBrowser({
   const [reloadKey, setReloadKey] = useState(0);
   const [selected, setSelected] = useState<Selected | null>(null);
   const [filterColumn, setFilterColumn] = useState<string | null>(null);
+  // Hidden columns, persisted per CRD (its metadata.name is unique per cluster).
+  const columnStoreKey = `crd:${crd.name}`;
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(
+    () => new Set(loadHiddenColumns(columnStoreKey)),
+  );
+  useEffect(() => {
+    setHiddenColumns(new Set(loadHiddenColumns(`crd:${crd.name}`)));
+  }, [crd.name]);
 
   useEffect(() => {
     if (!crd.namespaced) return;
@@ -56,23 +76,53 @@ export function CustomResourceBrowser({
     };
   }, [context, crd, namespace, reloadKey]);
 
-  const columns: Column<CustomRow>[] = [
-    { key: "name", header: crd.kind, render: (r) => <strong>{r.name}</strong> },
-    ...(crd.namespaced
-      ? [
-          {
-            key: "namespace",
-            header: "Namespace",
-            render: (r: CustomRow) => <span className="cat-link">{r.namespace}</span>,
-          },
-        ]
-      : []),
-    { key: "age", header: "Age", render: (r) => <span className="text-muted-foreground">{r.age}</span> },
-  ];
+  const columns: Column<CustomRow>[] = useMemo(
+    () => [
+      { key: "name", header: crd.kind, render: (r: CustomRow) => <strong>{r.name}</strong> },
+      ...(crd.namespaced
+        ? [
+            {
+              key: "namespace",
+              header: "Namespace",
+              render: (r: CustomRow) => <span className="cat-link">{r.namespace}</span>,
+            },
+          ]
+        : []),
+      {
+        key: "age",
+        header: "Age",
+        render: (r: CustomRow) => <span className="text-muted-foreground">{r.age}</span>,
+      },
+    ],
+    [crd.kind, crd.namespaced],
+  );
+
+  // The name column identifies the row and is always shown.
+  const pinnedColumnKey = "name";
+  const visibleColumns = useMemo(
+    () => columns.filter((column) => column.key === pinnedColumnKey || !hiddenColumns.has(column.key)),
+    [columns, hiddenColumns],
+  );
+  const columnOptions: ColumnOption[] = columns.map((column) => ({
+    key: column.key,
+    label: typeof column.header === "string" ? column.header : column.key,
+  }));
+  function toggleColumn(key: string) {
+    if (key === pinnedColumnKey) return;
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveHiddenColumns(columnStoreKey, [...next]);
+      return next;
+    });
+    // A hidden column can't stay the active search filter.
+    setFilterColumn((current) => (current === key ? null : current));
+  }
 
   const filtered = useMemo(
-    () => filterTableData(rows ?? [], columns, query, filterColumn),
-    [columns, filterColumn, query, rows],
+    () => filterTableData(rows ?? [], visibleColumns, query, filterColumn),
+    [visibleColumns, filterColumn, query, rows],
   );
   const filterLabel = filterColumn
     ? columns.find((column) => column.key === filterColumn)?.header
@@ -98,6 +148,12 @@ export function CustomResourceBrowser({
             <RefreshCw data-icon="inline-start" />
             Refresh
           </Button>
+          <ColumnPicker
+            columns={columnOptions}
+            hidden={hiddenColumns}
+            onToggle={toggleColumn}
+            pinnedKey={pinnedColumnKey}
+          />
           {rows === null && <Spinner label="Loading resources" />}
           <div className="ml-auto w-56">
             <TextInput
@@ -119,7 +175,7 @@ export function CustomResourceBrowser({
           {error && <p className="px-3 py-2 text-sm text-destructive">Error: {error}</p>}
           {!error && (
             <Table
-              columns={columns}
+              columns={visibleColumns}
               data={filtered}
               getRowKey={(r) => r.name}
               selectedKey={selected?.name}

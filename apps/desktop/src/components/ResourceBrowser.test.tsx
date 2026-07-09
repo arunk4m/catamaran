@@ -631,3 +631,37 @@ describe("ResourceBrowser", () => {
     await waitFor(() => expect(screen.getByText(/list nodes timed out/)).toBeDefined());
   });
 });
+
+describe("column visibility on every table", () => {
+  it("hides a deployments column and persists it independently of other kinds", async () => {
+    localStorage.clear();
+    listNamespacesMock.mockResolvedValue({ namespaces: ["default"] });
+    watchResourceMock.mockImplementation(
+      watchWith([{ name: "web", namespace: "default", ready: "1/1", upToDate: 1, available: 1 }]),
+    );
+    const user = userEvent.setup();
+    const view = render(<ResourceBrowser context="kind-dev" kind="deployments" />);
+    await waitFor(() => expect(screen.getByText("web")).toBeDefined());
+    expect(screen.getByRole("columnheader", { name: /Available/ })).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Choose columns" }));
+    await user.click(await screen.findByLabelText("Available"));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("columnheader", { name: /Available/ })).toBeNull(),
+    );
+    expect(JSON.parse(localStorage.getItem("catamaran.hiddenColumns")!)).toEqual({
+      deployments: ["available"],
+    });
+
+    // Another kind's table is unaffected by the deployments choice.
+    view.unmount();
+    watchResourceMock.mockImplementation(
+      watchWith([{ name: "svc-1", namespace: "default", type: "ClusterIP", clusterIp: "10.0.0.1", ports: "80/TCP" }]),
+    );
+    render(<ResourceBrowser context="kind-dev" kind="services" />);
+    await waitFor(() => expect(screen.getByText("svc-1")).toBeDefined());
+    expect(screen.getByRole("button", { name: "Choose columns" })).toBeDefined();
+    expect(screen.getByRole("columnheader", { name: /Type/ })).toBeDefined();
+  });
+});
