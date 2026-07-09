@@ -27,6 +27,7 @@ BRANCHES=(
   feat/columns-everywhere
   feat/palette-actions
   chore/release-0.1.0
+  feat/ui-refresh
 )
 
 # 1. Create the repo (private; flip to public whenever you like) and push.
@@ -79,6 +80,10 @@ pr feat/palette-actions feat/columns-everywhere \
 pr chore/release-0.1.0 feat/palette-actions \
   "Release prep: v0.1.0 metadata" \
 "Product name/window title/About menu capitalization, version 0.1.0 across tauri.conf and the cargo workspace (About menu + MCP banner), CONTRIBUTING prose polish."
+
+pr feat/ui-refresh chore/release-0.1.0 \
+  "Regatta chrome: Catamaran's own design language" \
+"Retires the inherited Lens-style chrome in every surface: a labeled circular-avatar cluster rail with gradient active ring, aboard dots, and brand mast; a floating rounded content card over an aurora backdrop; pill deck tabs; pill nav rows with small-caps headings; tinted table hover/selection with blurred sticky headers; pill dock tabs; borderless status bar; unified avatar treatment; eased motion across the chrome."
 
 # 3. Optionally merge the stack bottom-up (GitHub retargets as bases merge).
 if $MERGE_ALL; then

@@ -856,6 +856,7 @@ export function App() {
         contextProfiles={contextProfiles}
         kubeconfigFiles={kubeconfigFiles}
         contextOrder={contextOrder}
+        openContexts={clusters}
       />
       {anyCluster && (
         <Sidebar
