@@ -11,6 +11,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use flate2::read::GzDecoder;
 use catamaran_capability::{Annotations, Capability, CapabilityError};
+use futures::StreamExt;
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::ListParams;
 use kube::Api;
@@ -19,6 +20,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::client_cache::ClientCache;
+use crate::connect::request_timeout;
+
+/// Page size for walking release-secret metadata.
+const HELM_META_PAGE: u32 = 500;
+/// How many latest-revision secret bodies to fetch concurrently.
+const HELM_FETCH_CONCURRENCY: usize = 8;
 
 fn handler_err(e: impl ToString) -> CapabilityError {
     CapabilityError::Handler(e.to_string())
@@ -90,6 +97,8 @@ pub struct ListHelmReleasesOut {
     pub releases: Vec<HelmReleaseSummary>,
 }
 
+/// List full secret bodies for a label selector. Only safe for narrow scopes
+/// (one release's history): each Helm secret embeds a whole gzipped chart.
 async fn list_release_secrets(
     cache: &Arc<ClientCache>,
     context: &str,
@@ -109,6 +118,96 @@ async fn list_release_secrets(
     Ok(list.items)
 }
 
+/// Pick the latest revision's secret per release from
+/// (namespace, secret name, release-name label, version label) rows.
+pub(crate) fn latest_revision_secrets(
+    rows: impl Iterator<Item = (String, String, String, i64)>,
+) -> Vec<(String, String)> {
+    let mut latest: BTreeMap<(String, String), (i64, String)> = BTreeMap::new();
+    for (namespace, secret, release, version) in rows {
+        if release.is_empty() {
+            continue;
+        }
+        let key = (namespace, release);
+        match latest.get(&key) {
+            Some((existing, _)) if *existing >= version => {}
+            _ => {
+                latest.insert(key, (version, secret));
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .map(|((namespace, _), (_, secret))| (namespace, secret))
+        .collect()
+}
+
+/// Cluster-wide release discovery without the cluster-wide payload: page
+/// through secret METADATA (Helm labels carry release name + revision), pick
+/// the latest revision per release, then fetch only those bodies — a handful
+/// of gets instead of one response containing every revision of every chart,
+/// which breaks the connection on real clusters.
+async fn latest_release_secret_bodies(
+    cache: &Arc<ClientCache>,
+    context: &str,
+    namespace: &str,
+) -> Result<Vec<Secret>, CapabilityError> {
+    let client = cache.get(context).await.map_err(CapabilityError::Handler)?;
+    let api: Api<Secret> = if namespace.is_empty() {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), namespace)
+    };
+
+    let mut rows: Vec<(String, String, String, i64)> = Vec::new();
+    let mut continue_token: Option<String> = None;
+    loop {
+        let mut params = ListParams::default().labels("owner=helm").limit(HELM_META_PAGE);
+        if let Some(token) = &continue_token {
+            params = params.continue_token(token);
+        }
+        let page = tokio::time::timeout(request_timeout(), api.list_metadata(&params))
+            .await
+            .map_err(|_| CapabilityError::Handler("list Helm releases timed out".into()))?
+            .map_err(handler_err)?;
+        for item in page.items {
+            let labels = item.metadata.labels.clone().unwrap_or_default();
+            rows.push((
+                item.metadata.namespace.clone().unwrap_or_default(),
+                item.metadata.name.clone().unwrap_or_default(),
+                labels.get("name").cloned().unwrap_or_default(),
+                labels.get("version").and_then(|v| v.parse().ok()).unwrap_or(0),
+            ));
+        }
+        match page.metadata.continue_ {
+            Some(token) if !token.is_empty() => continue_token = Some(token),
+            _ => break,
+        }
+    }
+
+    let winners = latest_revision_secrets(rows.into_iter());
+    let secrets: Vec<Secret> = futures::stream::iter(winners.into_iter().map(
+        |(secret_namespace, secret_name)| {
+            let client = client.clone();
+            async move {
+                let api: Api<Secret> = Api::namespaced(client, &secret_namespace);
+                match tokio::time::timeout(request_timeout(), api.get(&secret_name)).await {
+                    Ok(Ok(secret)) => Some(secret),
+                    // A release deleted mid-walk (or one slow get) shouldn't
+                    // take the whole list down — skip it.
+                    _ => None,
+                }
+            }
+        },
+    ))
+    .buffer_unordered(HELM_FETCH_CONCURRENCY)
+    .filter_map(|secret| async move { secret })
+    .collect()
+    .await;
+
+    Ok(secrets)
+}
+
 /// `k8s.listHelmReleases` — latest revision of each Helm release in scope.
 pub fn list_helm_releases_capability(cache: Arc<ClientCache>) -> Capability {
     Capability::typed::<ListHelmReleasesIn, ListHelmReleasesOut, _, _>(
@@ -119,7 +218,11 @@ pub fn list_helm_releases_capability(cache: Arc<ClientCache>) -> Capability {
             let cache = cache.clone();
             async move {
                 let ns = input.namespace.unwrap_or_default();
-                let secrets = list_release_secrets(&cache, &input.context, &ns, "owner=helm").await?;
+                let budget = request_timeout().saturating_mul(3);
+                let secrets =
+                    tokio::time::timeout(budget, latest_release_secret_bodies(&cache, &input.context, &ns))
+                        .await
+                        .map_err(|_| CapabilityError::Handler("list Helm releases timed out".into()))??;
                 // Keep the highest revision per (namespace, name).
                 let mut latest: BTreeMap<(String, String), HelmReleaseSummary> = BTreeMap::new();
                 for secret in &secrets {
@@ -270,6 +373,30 @@ mod tests {
         let raw = STANDARD.encode(r#"{"name":"nginx","version":1}"#).into_bytes();
         let v = decode_release(&raw).unwrap();
         assert_eq!(v["name"], "nginx");
+    }
+
+    #[test]
+    fn picks_the_latest_revision_secret_per_release() {
+        let rows = vec![
+            ("apps".into(), "sh.helm.release.v1.web.v1".into(), "web".into(), 1),
+            ("apps".into(), "sh.helm.release.v1.web.v3".into(), "web".into(), 3),
+            ("apps".into(), "sh.helm.release.v1.web.v2".into(), "web".into(), 2),
+            ("cache".into(), "sh.helm.release.v1.redis.v7".into(), "redis".into(), 7),
+            // Same release name in a different namespace is a separate release.
+            ("other".into(), "sh.helm.release.v1.web.v5".into(), "web".into(), 5),
+            // Rows without a release-name label are ignored.
+            ("apps".into(), "unlabeled".into(), "".into(), 9),
+        ];
+        let mut winners = latest_revision_secrets(rows.into_iter());
+        winners.sort();
+        assert_eq!(
+            winners,
+            vec![
+                ("apps".to_string(), "sh.helm.release.v1.web.v3".to_string()),
+                ("cache".to_string(), "sh.helm.release.v1.redis.v7".to_string()),
+                ("other".to_string(), "sh.helm.release.v1.web.v5".to_string()),
+            ]
+        );
     }
 
     #[test]

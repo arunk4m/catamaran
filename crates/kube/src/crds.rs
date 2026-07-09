@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use catamaran_capability::{Annotations, Capability, CapabilityError};
+use futures::StreamExt;
 use kube::api::{Api, DynamicObject, ListParams};
 use kube::core::{ApiResource, GroupVersionKind};
 use schemars::JsonSchema;
@@ -38,20 +39,13 @@ fn handler_err(e: impl ToString) -> CapabilityError {
     CapabilityError::Handler(e.to_string())
 }
 
-/// Choose the storage version, else the first served version, else the first.
-fn pick_version(spec: &serde_json::Value) -> String {
-    let versions = match spec["versions"].as_array() {
-        Some(v) => v,
-        None => return String::new(),
-    };
-    versions
-        .iter()
-        .find(|v| v["storage"].as_bool().unwrap_or(false))
-        .or_else(|| versions.iter().find(|v| v["served"].as_bool().unwrap_or(false)))
-        .or_else(|| versions.first())
-        .and_then(|v| v["name"].as_str())
-        .unwrap_or_default()
-        .to_string()
+/// Split a CRD metadata name ("<plural>.<group>") into (plural, group).
+pub(crate) fn split_crd_name(name: &str) -> Option<(String, String)> {
+    let (plural, group) = name.split_once('.')?;
+    if plural.is_empty() || group.is_empty() {
+        return None;
+    }
+    Some((plural.to_string(), group.to_string()))
 }
 
 /// `k8s.listCRDs` — discover installed CustomResourceDefinitions.
@@ -67,36 +61,105 @@ pub fn list_crds_capability(cache: Arc<ClientCache>) -> Capability {
                 let gvk =
                     GroupVersionKind::gvk("apiextensions.k8s.io", "v1", "CustomResourceDefinition");
                 let ar = ApiResource::from_gvk(&gvk);
-                let api: Api<DynamicObject> = Api::all_with(client, &ar);
-                let list = tokio::time::timeout(request_timeout(), api.list(&ListParams::default()))
-                    .await
-                    .map_err(|_| CapabilityError::Handler("list CRDs timed out".into()))?
-                    .map_err(handler_err)?;
+                let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
 
-                let mut crds: Vec<CrdDescriptor> = list
-                    .items
-                    .into_iter()
-                    .filter_map(|o| {
-                        let spec = &o.data["spec"];
-                        let group = spec["group"].as_str().unwrap_or_default().to_string();
-                        let kind = spec["names"]["kind"].as_str().unwrap_or_default().to_string();
-                        let plural = spec["names"]["plural"].as_str().unwrap_or_default().to_string();
-                        let namespaced = spec["scope"].as_str().unwrap_or("Namespaced") == "Namespaced";
-                        let version = pick_version(spec);
-                        if group.is_empty() || kind.is_empty() || plural.is_empty() || version.is_empty()
-                        {
-                            return None;
+                // CRD objects embed their full OpenAPI schemas — tens of MB
+                // cluster-wide, enough to stall or sever the connection on a
+                // VPN. No schema ever needs to cross the wire: a CRD's NAME is
+                // "<plural>.<group>" (metadata-only pages, tiny), and the
+                // discovery API supplies kind/version/scope in kilobytes.
+                let budget = request_timeout().saturating_mul(3);
+                let walk = async {
+                    let mut names: Vec<String> = Vec::new();
+                    let mut continue_token: Option<String> = None;
+                    loop {
+                        let mut params = ListParams::default().limit(500);
+                        if let Some(token) = &continue_token {
+                            params = params.continue_token(token);
                         }
-                        Some(CrdDescriptor {
-                            name: o.metadata.name.unwrap_or_default(),
-                            group,
-                            version,
-                            kind,
-                            plural,
-                            namespaced,
-                        })
+                        let page = tokio::time::timeout(request_timeout(), api.list_metadata(&params))
+                            .await
+                            .map_err(|_| CapabilityError::Handler("list CRDs timed out".into()))?
+                            .map_err(handler_err)?;
+                        names.extend(page.items.into_iter().filter_map(|item| item.metadata.name));
+                        match page.metadata.continue_ {
+                            Some(token) if !token.is_empty() => continue_token = Some(token),
+                            _ => break,
+                        }
+                    }
+                    Ok::<_, CapabilityError>(names)
+                };
+                let names = tokio::time::timeout(budget, walk)
+                    .await
+                    .map_err(|_| CapabilityError::Handler("list CRDs timed out".into()))??;
+
+                // (group, plural) -> CRD metadata name
+                let mut wanted: std::collections::BTreeMap<(String, String), String> =
+                    std::collections::BTreeMap::new();
+                for name in names {
+                    if let Some((plural, group)) = split_crd_name(&name) {
+                        wanted.insert((group, plural), name);
+                    }
+                }
+                let wanted_groups: std::collections::BTreeSet<String> =
+                    wanted.keys().map(|(group, _)| group.clone()).collect();
+
+                // One tiny call lists every API group + its preferred version;
+                // then the per-group resource lists are fetched in parallel
+                // (sequential discovery is ~one VPN round-trip per group).
+                let group_list = tokio::time::timeout(request_timeout(), client.list_api_groups())
+                    .await
+                    .map_err(|_| CapabilityError::Handler("CRD discovery timed out".into()))?
+                    .map_err(handler_err)?;
+                let group_versions: Vec<(String, String)> = group_list
+                    .groups
+                    .into_iter()
+                    .filter(|group| wanted_groups.contains(&group.name))
+                    .filter_map(|group| {
+                        let version = group
+                            .preferred_version
+                            .map(|v| v.group_version)
+                            .or_else(|| group.versions.first().map(|v| v.group_version.clone()))?;
+                        Some((group.name, version))
                     })
                     .collect();
+
+                let resource_lists: Vec<_> = futures::stream::iter(group_versions.into_iter().map(
+                    |(group_name, group_version)| {
+                        let client = client.clone();
+                        async move {
+                            let list = tokio::time::timeout(
+                                request_timeout(),
+                                client.list_api_group_resources(&group_version),
+                            )
+                            .await
+                            .ok()?
+                            .ok()?;
+                            Some((group_name, group_version, list))
+                        }
+                    },
+                ))
+                .buffer_unordered(8)
+                .filter_map(|entry| async move { entry })
+                .collect()
+                .await;
+
+                let mut crds: Vec<CrdDescriptor> = Vec::new();
+                for (group_name, group_version, list) in resource_lists {
+                    let version = group_version.split('/').nth(1).unwrap_or_default().to_string();
+                    for resource in list.resources.iter().filter(|r| !r.name.contains('/')) {
+                        let key = (group_name.clone(), resource.name.clone());
+                        let Some(name) = wanted.get(&key) else { continue };
+                        crds.push(CrdDescriptor {
+                            name: name.clone(),
+                            group: group_name.clone(),
+                            version: version.clone(),
+                            kind: resource.kind.clone(),
+                            plural: resource.name.clone(),
+                            namespaced: resource.namespaced,
+                        });
+                    }
+                }
                 crds.sort_by(|a, b| (&a.group, &a.kind).cmp(&(&b.group, &b.kind)));
                 Ok(ListCrdsOut { crds })
             }
@@ -192,14 +255,17 @@ mod tests {
     }
 
     #[test]
-    fn picks_storage_version() {
-        let spec = serde_json::json!({
-            "versions": [
-                {"name": "v1alpha1", "served": true, "storage": false},
-                {"name": "v1beta1", "served": true, "storage": true},
-            ]
-        });
-        assert_eq!(pick_version(&spec), "v1beta1");
+    fn splits_crd_names_into_plural_and_group() {
+        assert_eq!(
+            split_crd_name("gateways.gateway.networking.k8s.io"),
+            Some(("gateways".to_string(), "gateway.networking.k8s.io".to_string()))
+        );
+        assert_eq!(
+            split_crd_name("widgets.example.com"),
+            Some(("widgets".to_string(), "example.com".to_string()))
+        );
+        assert_eq!(split_crd_name("nodot"), None);
+        assert_eq!(split_crd_name(".group.only"), None);
     }
 
     #[test]
