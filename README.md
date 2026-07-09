@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dev-tuskira/catamaran/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/dev-tuskira/catamaran?display_name=release&label=release&color=7d8cf8"></a>
+  <a href="https://github.com/arunk4m/catamaran/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/arunk4m/catamaran?display_name=release&label=release&color=7d8cf8"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-ff7a66"></a>
   <img alt="Rust" src="https://img.shields.io/badge/core-100%25_Rust-38bdf8">
   <img alt="Tauri v2" src="https://img.shields.io/badge/shell-Tauri_v2-7d8cf8">

@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Catamaran — Two hulls. One helm.</title>
+<meta name="description" content="Catamaran is a fast, beautiful Kubernetes workspace for the desktop: split-screen dual-context views, a pure-Rust core, and an MCP-native capability surface." />
+<link rel="icon" type="image/svg+xml" href="assets/logo-mark.svg" />
+<style>
+  :root {
+    --bg: #0a0d1d;
+    --card: #12163000;
+    --surface: #171b36;
+    --surface-2: #1d2244;
+    --border: #232a4d;
+    --text: #dbe1f8;
+    --muted: #8f98c2;
+    --heading: #eef1ff;
+    --accent: #7d8cf8;
+    --aqua: #38bdf8;
+    --coral: #ff7a66;
+    --mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background:
+      radial-gradient(1100px 520px at 12% -8%, rgba(125, 140, 248, 0.14), transparent 62%),
+      radial-gradient(900px 460px at 98% -6%, rgba(255, 122, 102, 0.10), transparent 58%),
+      var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: #98a5ff; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  nav { display: flex; align-items: center; gap: 12px; padding: 22px 0; }
+  nav img { width: 34px; height: 34px; }
+  nav .name { font-weight: 700; font-size: 17px; color: var(--heading); letter-spacing: 0.01em; }
+  nav .links { margin-left: auto; display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  nav .links a { color: var(--muted); }
+  nav .links a:hover { color: var(--text); }
+
+  header { padding: 64px 0 40px; text-align: center; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 5px 14px; font-size: 12.5px; color: var(--muted);
+    background: rgba(125, 140, 248, 0.07);
+  }
+  .badge b { color: var(--aqua); font-weight: 600; }
+  h1 {
+    margin: 22px auto 14px; max-width: 760px;
+    font-size: clamp(38px, 6vw, 58px); line-height: 1.08;
+    letter-spacing: -0.02em; color: var(--heading);
+  }
+  h1 .grad {
+    background: linear-gradient(92deg, var(--aqua), var(--accent) 55%, var(--coral));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { max-width: 640px; margin: 0 auto 30px; color: var(--muted); font-size: 17.5px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border-radius: 12px; padding: 12px 22px; font-weight: 600; font-size: 15px;
+    transition: transform 140ms cubic-bezier(.2,.8,.3,1.2), box-shadow 140ms ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary {
+    color: #0d1024;
+    background: linear-gradient(92deg, var(--aqua), var(--accent));
+    box-shadow: 0 8px 24px -10px rgba(125, 140, 248, 0.55);
+  }
+  .btn-primary:hover { color: #0d1024; }
+  .btn-ghost { color: var(--text); border: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+  .cta-note { margin-top: 14px; font-size: 12.5px; color: var(--muted); }
+  .cta-note code { font-family: var(--mono); color: var(--text); background: var(--surface); border-radius: 6px; padding: 2px 7px; }
+
+  /* Split-view mock */
+  .deck {
+    margin: 56px auto 0; max-width: 920px;
+    border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255,255,255,0.05);
+    text-align: left; font-size: 12px;
+  }
+  .deck-title {
+    display: flex; align-items: center; gap: 7px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: #10142b;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .deck-title span:nth-child(1) { background: #ff5f57; }
+  .deck-title span:nth-child(2) { background: #febc2e; }
+  .deck-title span:nth-child(3) { background: #28c840; }
+  .deck-title em { margin-left: 10px; font-style: normal; color: var(--muted); font-size: 11.5px; }
+  .panes { display: grid; grid-template-columns: 1fr 1fr; }
+  .pane + .pane { border-left: 1px solid var(--border); }
+  .pane-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    color: var(--muted); font-size: 10.5px;
+  }
+  .side {
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; font-size: 9px;
+    border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+  }
+  .pane--focused .side { color: var(--coral); border-color: rgba(255,122,102,.5); background: rgba(255,122,102,.12); }
+  .pane-head .ctx { color: var(--text); font-weight: 600; }
+  .pane-head .ok { width: 7px; height: 7px; border-radius: 50%; background: #34d399; }
+  .logs { padding: 12px 14px 16px; font-family: var(--mono); font-size: 11px; line-height: 1.75; color: #aab3d6; min-height: 150px; }
+  .logs .t { color: #6b7399; }
+  .logs .ok { color: #34d399; }
+  .logs .warn { color: #fbbf24; }
+  .caption { text-align: center; color: var(--muted); font-size: 13px; margin-top: 14px; }
+  kbd {
+    font-family: var(--mono); font-size: 11px; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 6px; padding: 1.5px 6px;
+  }
+
+  section { padding: 64px 0 8px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: 0.1em; font-size: 11.5px; font-weight: 700; color: var(--coral); }
+  h2 { font-size: clamp(26px, 3.4vw, 34px); color: var(--heading); letter-spacing: -0.015em; margin: 8px 0 10px; }
+  .lede { color: var(--muted); max-width: 640px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 30px; }
+  .card {
+    border: 1px solid var(--border); border-radius: 14px; padding: 20px 20px 18px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.025), transparent);
+    transition: border-color 140ms ease, transform 140ms ease;
+  }
+  .card:hover { border-color: rgba(125,140,248,0.45); transform: translateY(-2px); }
+  .card .ic { font-size: 20px; }
+  .card h3 { color: var(--heading); font-size: 15.5px; margin: 10px 0 6px; }
+  .card p { color: var(--muted); font-size: 13.5px; }
+
+  pre {
+    margin-top: 22px; padding: 18px 20px; overflow-x: auto;
+    background: #0d1126; border: 1px solid var(--border); border-radius: 14px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.7; color: #c7d0f2;
+  }
+  pre .c { color: #6b7399; }
+  pre .g { color: #34d399; }
+
+  .steps { margin-top: 26px; display: grid; gap: 12px; counter-reset: step; }
+  .step { display: flex; gap: 16px; align-items: flex-start; border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    flex: none; width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 700; font-size: 13px;
+    color: #0d1024; background: linear-gradient(135deg, var(--aqua), var(--accent));
+  }
+  .step b { color: var(--heading); display: block; margin-bottom: 2px; }
+  .step p { color: var(--muted); font-size: 13.5px; }
+  .step code { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--surface); border-radius: 6px; padding: 1px 6px; }
+
+  footer {
+    margin-top: 80px; padding: 26px 0 40px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: center;
+  }
+  footer .spacer { flex: 1; }
+  @media (max-width: 640px) { .panes { grid-template-columns: 1fr; } .pane + .pane { border-left: 0; border-top: 1px solid var(--border); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav>
+    <img src="assets/logo-mark.svg" alt="" />
+    <span class="name">Catamaran</span>
+    <span class="links">
+      <a href="#features">Features</a>
+      <a href="#mcp">MCP</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/arunk4m/catamaran">GitHub</a>
+    </span>
+  </nav>
+
+  <header>
+    <span class="badge"><b>100% Rust core</b> · Tauri v2 · MCP-native · macOS</span>
+    <h1>Two hulls. <span class="grad">One helm.</span></h1>
+    <p class="sub">
+      A fast, beautiful Kubernetes workspace for the desktop. Split the deck and sail two
+      cluster contexts side by side — compare prod against staging, or race two pods'
+      live logs — while AI agents drive the very same capabilities over MCP.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/arunk4m/catamaran/releases/latest">⬇&nbsp; Download for macOS</a>
+      <a class="btn btn-ghost" href="https://github.com/arunk4m/catamaran">View source</a>
+    </div>
+    <p class="cta-note">Apple Silicon &amp; Intel · ~12&nbsp;MB DMG · or build from source with <code>pnpm tauri build</code></p>
+
+    <div class="deck" role="img" aria-label="Split View: two cluster panes tailing logs side by side">
+      <div class="deck-title"><span class="dot"></span><span class="dot"></span><span class="dot"></span><em>Catamaran — Split View</em></div>
+      <div class="panes">
+        <div class="pane">
+          <div class="pane-head"><span class="side">Port</span><span class="ok"></span><span class="ctx">prod</span><span>Pods · payments</span></div>
+          <div class="logs">
+            <div><span class="t">10:42:01Z</span> <span class="ok">[prod]</span> checkout ok latency=41ms</div>
+            <div><span class="t">10:42:02Z</span> <span class="ok">[prod]</span> checkout ok latency=39ms</div>
+            <div><span class="t">10:42:03Z</span> <span class="ok">[prod]</span> checkout ok latency=44ms</div>
+            <div><span class="t">10:42:04Z</span> <span class="ok">[prod]</span> checkout ok latency=40ms</div>
+          </div>
+        </div>
+        <div class="pane pane--focused">
+          <div class="pane-head"><span class="side">Starboard</span><span class="ok"></span><span class="ctx">staging</span><span>Pods · payments</span></div>
+          <div class="logs">
+            <div><span class="t">10:42:01Z</span> [staging] checkout ok latency=52ms</div>
+            <div><span class="t">10:42:02Z</span> <span class="warn">[staging] warning: retry backend=cache-2</span></div>
+            <div><span class="t">10:42:03Z</span> [staging] checkout ok latency=214ms</div>
+            <div><span class="t">10:42:04Z</span> <span class="warn">[staging] warning: retry backend=cache-2</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="caption">Press <kbd>⌘\</kbd> to split the deck · <kbd>⌘⌥←/→</kbd> to move focus · link panes to navigate both at once</p>
+  </header>
+
+  <section id="features">
+    <div class="eyebrow">Built for two-cluster problems</div>
+    <h2>Everything a Kubernetes IDE does — with depth perception.</h2>
+    <p class="lede">Dev vs prod, blue vs green, old vs new: operating Kubernetes is a comparison
+    workload. Catamaran makes the comparison a first-class layout instead of a pile of windows.</p>
+    <div class="grid">
+      <div class="card"><div class="ic">⛵</div><h3>Split View deck</h3><p>Two independent panes — each with its own context, namespace, tabs, and log dock. Linked cruising mirrors navigation across both while each keeps its own cluster.</p></div>
+      <div class="card"><div class="ic">📡</div><h3>Live everything</h3><p>40+ resource kinds streamed by server-side watches — no polling. Logs follow with reconnect, timestamps, since/tail windows, and previous-instance reads.</p></div>
+      <div class="card"><div class="ic">🤖</div><h3>MCP-native</h3><p>Every backend capability is also an MCP tool — 57 and counting — so agents operate clusters through the same audited code paths as the UI, with destructive ops gated.</p></div>
+      <div class="card"><div class="ic">🪶</div><h3>Rust-light</h3><p>Pure-Rust core on kube-rs and tokio inside a Tauri v2 shell. A ~12 MB DMG that talks straight to your API servers — no Node main process, no bundled Chromium.</p></div>
+      <div class="card"><div class="ic">⌨️</div><h3>Keyboard-first</h3><p>A ⌘K palette with fuzzy + frecency ranking that jumps to any view or resource and runs workspace actions — split, link, swap, theme — without leaving home row.</p></div>
+      <div class="card"><div class="ic">🛡️</div><h3>Safe by default</h3><p>Confirmation-gated destructive actions, YAML editing with schema validation, and exec-auth hardening so stale terminal credentials can never hijack your identity.</p></div>
+    </div>
+  </section>
+
+  <section id="mcp">
+    <div class="eyebrow">Agents welcome aboard</div>
+    <h2>The GUI and your AI agent share one capability registry.</h2>
+    <p class="lede">Run the same binary as an MCP server over stdio or loopback HTTP. Tools carry
+    read-only/destructive annotations, and nothing destructive runs without an explicit confirmation argument.</p>
+<pre><span class="c"># stdio transport (local agents / IDE clients)</span>
+catamaran --mcp-stdio
+
+<span class="c"># loopback HTTP (default 127.0.0.1:8765)</span>
+catamaran --mcp-http
+
+<span class="c"># every capability, one registry — enforced by CI</span>
+<span class="g">✓</span> k8s.listContexts   <span class="g">✓</span> k8s.listPods   <span class="g">✓</span> k8s.podLogs   <span class="g">✓</span> 54 more…</pre>
+  </section>
+
+  <section id="install">
+    <div class="eyebrow">Set sail</div>
+    <h2>Install in under a minute.</h2>
+    <div class="steps">
+      <div class="step"><div><b>Download the DMG</b><p>Grab <code>Catamaran_&lt;version&gt;_aarch64.dmg</code> (Apple Silicon) or <code>_x64.dmg</code> (Intel) from the <a href="https://github.com/arunk4m/catamaran/releases/latest">latest release</a>.</p></div></div>
+      <div class="step"><div><b>Drag to Applications</b><p>Community builds aren't Developer-ID signed yet — first launch: right-click → Open, or run <code>xattr -cr /Applications/Catamaran.app</code> once.</p></div></div>
+      <div class="step"><div><b>Open a context, then split the deck</b><p>Catamaran reads your kubeconfig (including exec auth for EKS/GKE/AKS). Hit <kbd>⌘\</kbd>, put a second context beside the first, and compare away.</p></div></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>© 2026 Catamaran contributors · MIT License</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/arunk4m/catamaran">GitHub</a>
+    <a href="https://github.com/arunk4m/catamaran/releases">Releases</a>
+    <a href="https://github.com/arunk4m/catamaran/blob/main/docs/DEVELOPMENT.md">Developer guide</a>
+  </footer>
+
+</div>
+</body>
+</html>

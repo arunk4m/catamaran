@@ -1,7 +1,7 @@
 # Installing Catamaran
 
 Packaged builds are published on the
-[latest release](https://github.com/dev-tuskira/catamaran/releases/latest) for macOS.
+[latest release](https://github.com/arunk4m/catamaran/releases/latest) for macOS.
 Once installed, Catamaran can update itself from **Settings → Updates** (Stable or Dev
 channel).
 
@@ -10,7 +10,7 @@ Prefer to build from source? See the [developer guide](DEVELOPMENT.md).
 ## macOS
 
 1. Download the `.dmg` for your chip from the
-   [latest release](https://github.com/dev-tuskira/catamaran/releases/latest):
+   [latest release](https://github.com/arunk4m/catamaran/releases/latest):
    - Apple Silicon (M1/M2/M3/…): `Catamaran_<version>_aarch64.dmg`
    - Intel: `Catamaran_<version>_x64.dmg`
 2. Open the `.dmg` and drag **Catamaran** into **Applications**.

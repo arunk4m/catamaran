@@ -30,7 +30,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/dev-tuskira/catamaran/releases/latest/download/latest.json"
+        "https://github.com/arunk4m/catamaran/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFMjNGOUYxNDc4NEYyMEQKUldRTjhvUkg4ZmtqWGdtdmxrbDU0MkFQQmkvMG91Y3JKS2tvTW42V0QxajYyZGFmMDVDN0ZhWkYK"
     }

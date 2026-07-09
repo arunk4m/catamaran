@@ -56,7 +56,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainers responsible for enforcement by opening a
-[private report](https://github.com/dev-tuskira/catamaran/security/advisories/new) or
+[private report](https://github.com/arunk4m/catamaran/security/advisories/new) or
 contacting a maintainer directly. All complaints will be reviewed and
 investigated promptly and fairly.
 

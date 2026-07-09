@@ -18,9 +18,9 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
 const STABLE_ENDPOINT: &str =
-    "https://github.com/dev-tuskira/catamaran/releases/latest/download/latest.json";
+    "https://github.com/arunk4m/catamaran/releases/latest/download/latest.json";
 const DEV_ENDPOINT: &str =
-    "https://github.com/dev-tuskira/catamaran/releases/download/dev-channel/latest.json";
+    "https://github.com/arunk4m/catamaran/releases/download/dev-channel/latest.json";
 
 fn endpoint_for(channel: &str) -> &'static str {
     if channel == "dev" {

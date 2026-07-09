@@ -7,7 +7,7 @@ users safe.
 ## Supported versions
 
 Security fixes target the **latest release**. Please upgrade to the newest
-version (the in-app updater or the [Releases](https://github.com/dev-tuskira/catamaran/releases/latest)
+version (the in-app updater or the [Releases](https://github.com/arunk4m/catamaran/releases/latest)
 page) before reporting.
 
 ## Reporting a vulnerability
@@ -53,7 +53,7 @@ credential plugins you configure.
 - **Signed builds** — macOS builds are Developer-ID signed and notarized;
   in-app updater artifacts are signed and verified before install. Windows
   code signing and GPG-signed release assets are on the
-  [roadmap](https://github.com/dev-tuskira/catamaran/issues).
+  [roadmap](https://github.com/arunk4m/catamaran/issues).
 - **MIT-licensed** — the source is open for review.
 
 ## Known dependency advisories
