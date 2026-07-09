@@ -60,3 +60,68 @@ describe("StatusBar", () => {
     expect(screen.getByText("no context")).toBeDefined();
   });
 });
+
+const { ssoProfilesMock, ssoLoginMock, openExternalUrlMock, notifyMock } = vi.hoisted(() => ({
+  ssoProfilesMock: vi.fn(),
+  ssoLoginMock: vi.fn(),
+  openExternalUrlMock: vi.fn(),
+  notifyMock: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+vi.mock("../lib/aws", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/aws")>();
+  return {
+    ...actual,
+    ssoProfiles: ssoProfilesMock,
+    ssoLogin: ssoLoginMock,
+    openExternalUrl: openExternalUrlMock,
+  };
+});
+vi.mock("../lib/notify", () => ({ notify: notifyMock }));
+
+describe("AWS access button", () => {
+  it("is hidden until a portal URL is configured", () => {
+    render(<StatusBar panes={single("dev-eks")} tabCount={1} />);
+    expect(screen.queryByLabelText("Refresh AWS access")).toBeNull();
+  });
+
+  it("refreshes the focused context's profile and reports success", async () => {
+    ssoProfilesMock.mockResolvedValue({
+      profiles: [
+        { profile: "tusk-dev", contexts: ["dev-eks"] },
+        { profile: "tusk-prod", contexts: ["prod-eks"] },
+      ],
+    });
+    ssoLoginMock.mockResolvedValue({ ok: true });
+    render(
+      <StatusBar
+        panes={single("dev-eks")}
+        tabCount={1}
+        awsPortalUrl="https://deepinsightai.awsapps.com/start/#/"
+      />,
+    );
+    const { fireEvent, waitFor } = await import("@testing-library/react");
+    fireEvent.click(screen.getByLabelText("Refresh AWS access"));
+    await waitFor(() => expect(ssoLoginMock).toHaveBeenCalledWith("tusk-dev"));
+    await waitFor(() => expect(notifyMock.success).toHaveBeenCalled());
+    expect(openExternalUrlMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the portal when no profile is pinned, and on login failure", async () => {
+    const { fireEvent, waitFor, cleanup } = await import("@testing-library/react");
+
+    ssoProfilesMock.mockResolvedValue({ profiles: [] });
+    render(<StatusBar panes={single(null)} tabCount={0} awsPortalUrl="https://portal.example" />);
+    fireEvent.click(screen.getByLabelText("Refresh AWS access"));
+    await waitFor(() => expect(openExternalUrlMock).toHaveBeenCalledWith("https://portal.example"));
+    expect(notifyMock.info).toHaveBeenCalled();
+    cleanup();
+
+    ssoProfilesMock.mockResolvedValue({ profiles: [{ profile: "tusk-dev", contexts: ["dev-eks"] }] });
+    ssoLoginMock.mockResolvedValue({ error: "Token has expired and refresh failed" });
+    openExternalUrlMock.mockClear();
+    render(<StatusBar panes={single("dev-eks")} tabCount={1} awsPortalUrl="https://portal.example" />);
+    fireEvent.click(screen.getByLabelText("Refresh AWS access"));
+    await waitFor(() => expect(notifyMock.error).toHaveBeenCalled());
+    await waitFor(() => expect(openExternalUrlMock).toHaveBeenCalledWith("https://portal.example"));
+  });
+});

@@ -46,6 +46,8 @@ import {
   loadUpdateChannel,
   loadMcpSettings,
   loadDeckLayout,
+  loadAwsPortalUrl,
+  saveAwsPortalUrl,
   saveDeckLayout,
 } from "./lib/settings";
 import {
@@ -124,6 +126,12 @@ export function App() {
   const [clusterNs, setClusterNs] = useState<Record<string, string>>(loadClusterNamespaces);
   // Global fallback namespace for clusters with no remembered selection.
   const [defaultNs, setDefaultNs] = useState(getDefaultNamespace);
+  // Configured AWS access-portal URL ("" = feature hidden).
+  const [awsPortalUrl, setAwsPortalUrl] = useState(loadAwsPortalUrl);
+  function changeAwsPortalUrl(url: string) {
+    setAwsPortalUrl(url);
+    saveAwsPortalUrl(url);
+  }
   const dockIdRef = useRef(1);
   const focusNonce = useRef(0);
   // Mirror the deck into a ref so once-registered listeners (Cmd+W menu event,
@@ -737,6 +745,8 @@ export function App() {
                       onKubeconfigFilesChange={changeKubeconfigFiles}
                       contextOrder={contextOrder}
                       onContextOrderChange={changeContextOrder}
+                      awsPortalUrl={awsPortalUrl}
+                      onAwsPortalUrlChange={changeAwsPortalUrl}
                     />
                   ) : paneActiveTab.crd && paneCluster ? (
                     <CustomResourceBrowser
@@ -899,6 +909,7 @@ export function App() {
           activeTab ? (activeTab.crd ? activeTab.crd.kind : RESOURCE_LABELS[activeKind]) : undefined
         }
         tabCount={pane.tabs.length}
+        awsPortalUrl={awsPortalUrl}
       />
       <CommandPalette
         open={paletteOpen}

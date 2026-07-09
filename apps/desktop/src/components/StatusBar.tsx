@@ -1,6 +1,58 @@
-import React from "react";
+import React, { useState } from "react";
+import { CloudCog } from "lucide-react";
 import { ClusterUsage } from "./ClusterUsage";
 import { ForwardsIndicator } from "./ForwardsIndicator";
+import { ssoProfiles, ssoLogin, openExternalUrl, profileForContext } from "../lib/aws";
+import { notify } from "../lib/notify";
+
+/**
+ * One-click AWS access refresh: figures out the SSO profile behind the
+ * focused context (falling back to the first pinned profile), runs
+ * `aws sso login` — which opens the access portal for approval — and lets
+ * the backend drop cached clients so panes reconnect. With no pinned
+ * profile it simply opens the configured portal.
+ */
+function AwsAccessButton({ portalUrl, context }: { portalUrl: string; context: string | null }) {
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const found = await ssoProfiles();
+      const profile = profileForContext(found.profiles ?? [], context);
+      if (!profile) {
+        await openExternalUrl(portalUrl);
+        notify.info("Opened the AWS access portal");
+        return;
+      }
+      const outcome = await ssoLogin(profile);
+      if (outcome.ok) {
+        notify.success(`AWS access refreshed (${profile}) — clusters will reconnect`);
+      } else {
+        notify.error(outcome.error ?? "AWS SSO login failed");
+        await openExternalUrl(portalUrl);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="cat-statusbar__aws"
+      onClick={() => void refresh()}
+      disabled={busy}
+      aria-busy={busy}
+      aria-label="Refresh AWS access"
+      title="Refresh AWS SSO credentials (opens the access portal for approval)"
+    >
+      <CloudCog aria-hidden="true" />
+      {busy ? "Waiting for approval…" : "AWS access"}
+    </button>
+  );
+}
 
 /** One pane's context, as shown in the status bar when the deck is split. */
 export interface StatusPaneInfo {
@@ -19,10 +71,13 @@ export function StatusBar({
   panes,
   activeLabel,
   tabCount,
+  awsPortalUrl = "",
 }: {
   panes: StatusPaneInfo[];
   activeLabel?: string;
   tabCount: number;
+  /** Configured AWS access-portal URL; shows the refresh button when set. */
+  awsPortalUrl?: string;
 }) {
   const focused = panes.find((pane) => pane.focused) ?? panes[0] ?? null;
   const split = panes.length > 1;
@@ -59,6 +114,7 @@ export function StatusBar({
       {activeLabel && <span className="cat-statusbar__label truncate">{activeLabel}</span>}
 
       <span className="cat-statusbar__meta ml-auto flex items-center gap-3">
+        {awsPortalUrl && <AwsAccessButton portalUrl={awsPortalUrl} context={activeCluster} />}
         <ForwardsIndicator />
         {activeCluster && <ClusterUsage context={activeCluster} />}
         <span className="tabular-nums">

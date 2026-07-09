@@ -148,6 +148,11 @@ pub fn build_registry_with(cache: Arc<ClientCache>) -> Registry {
     reg.register(catamaran_kube::crds::list_custom_resource_capability(cache.clone()));
     reg.register(catamaran_kube::helm::list_helm_releases_capability(cache.clone()));
     reg.register(catamaran_kube::helm::get_helm_release_capability(cache.clone()));
+    reg.register(catamaran_kube::sso::sso_profiles_capability(
+        default_kubeconfig_paths(),
+    ));
+    reg.register(catamaran_kube::sso::sso_login_capability(cache.clone()));
+    reg.register(catamaran_kube::sso::open_url_capability());
     reg.register(catamaran_kube::manifest::list_resource_capability(cache));
 
     reg

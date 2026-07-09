@@ -59,6 +59,12 @@ impl ClientCache {
     pub async fn invalidate(&self, context: &str) {
         self.clients.lock().await.remove(context);
     }
+
+    /// Drop every cached client — e.g. after credentials are refreshed, so all
+    /// contexts rebuild from the kubeconfig and re-run their exec plugins.
+    pub async fn invalidate_all(&self) {
+        self.clients.lock().await.clear();
+    }
 }
 
 #[cfg(test)]
@@ -85,5 +91,11 @@ mod tests {
     async fn invalidate_is_safe_on_empty_cache() {
         let cache = ClientCache::new(PathBuf::from("/x"));
         cache.invalidate("nope").await; // must not panic
+    }
+
+    #[tokio::test]
+    async fn invalidate_all_is_safe_on_empty_cache() {
+        let cache = ClientCache::new(PathBuf::from("/x"));
+        cache.invalidate_all().await; // must not panic
     }
 }
