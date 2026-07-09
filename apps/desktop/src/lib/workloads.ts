@@ -70,6 +70,33 @@ export async function listPods(
   }
 }
 
+/** Pod phase tallies for a namespace ("" = cluster-wide). */
+export interface PodCounts {
+  total: number;
+  running: number;
+  pending: number;
+  succeeded: number;
+  failed: number;
+  unknown: number;
+}
+
+/**
+ * Count pods by phase via `k8s.podCounts` — dashboard-cheap: the tally happens
+ * in the backend, so large clusters ship five integers instead of every pod row.
+ */
+export async function podCounts(
+  context: string,
+  namespace: string,
+  invoke: Invoker = invokeCapability,
+): Promise<{ counts?: PodCounts; error?: string }> {
+  try {
+    const counts = await invoke<PodCounts>("k8s.podCounts", { context, namespace });
+    return { counts };
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+
 /** List deployments in a namespace via `k8s.listDeployments`. */
 export async function listDeployments(
   context: string,

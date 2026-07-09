@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { listNamespaces, listPods } from "../lib/workloads";
+import { listNamespaces, podCounts, type PodCounts } from "../lib/workloads";
 import { listNodes, listResource, listEvents } from "../lib/manifest";
 import {
   DashboardSegmentBar,
@@ -17,13 +17,21 @@ import {
 import { describeError } from "../lib/errors";
 import type { ResourceKind } from "./ResourceBrowser";
 
+/**
+ * Overview stats degrade per section: a slow or failing count renders as "—"
+ * with a note, instead of taking the whole dashboard down. Only when every
+ * section fails (the cluster is genuinely unreachable) does the page show the
+ * full error state.
+ */
 interface Stats {
-  nodes: { total: number; ready: number };
-  pods: { total: number; running: number; pending: number; other: number };
-  deployments: number;
-  services: number;
-  namespaces: number;
-  events: { total: number; normal: number; warnings: number; recentWarnings: string[] };
+  nodes: { total: number; ready: number } | null;
+  pods: { total: number; running: number; pending: number; other: number } | null;
+  deployments: number | null;
+  services: number | null;
+  namespaces: number | null;
+  events: { total: number; normal: number; warnings: number; recentWarnings: string[] } | null;
+  /** Human-readable names of sections whose fetch failed. */
+  unavailable: string[];
 }
 
 interface OverviewSnapshot {
@@ -50,42 +58,59 @@ function formatUpdatedAt(updatedAt: number) {
   return new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(new Date(updatedAt));
 }
 
+function podStats(counts: PodCounts) {
+  return {
+    total: counts.total,
+    running: counts.running,
+    pending: counts.pending,
+    other: counts.total - counts.running - counts.pending,
+  };
+}
+
 async function fetchOverview(context: string): Promise<OverviewSnapshot> {
   const [nodes, pods, deps, svcs, ns, events] = await Promise.all([
     listNodes(context),
-    listPods(context, ""),
+    podCounts(context, ""),
     listResource(context, "Deployment", ""),
     listResource(context, "Service", ""),
     listNamespaces(context),
     listEvents(context, null),
   ]);
-  const firstError = nodes.error || pods.error || deps.error || svcs.error || ns.error || events.error;
-  if (firstError) throw new Error(firstError);
 
-  const podList = pods.pods ?? [];
+  const failures: Array<{ section: string; error: string }> = [];
+  if (nodes.error) failures.push({ section: "nodes", error: nodes.error });
+  if (pods.error) failures.push({ section: "pods", error: pods.error });
+  if (deps.error) failures.push({ section: "workloads", error: deps.error });
+  if (svcs.error) failures.push({ section: "services", error: svcs.error });
+  if (ns.error) failures.push({ section: "namespaces", error: ns.error });
+  if (events.error) failures.push({ section: "events", error: events.error });
+
+  // Everything failed → the cluster really is unreachable; surface the error.
+  if (failures.length === 6) throw new Error(failures[0].error);
+
   const eventList = events.events ?? [];
   const warningEvents = eventList.filter((event) => event.type === "Warning");
   return {
     stats: {
-      nodes: {
-        total: (nodes.nodes ?? []).length,
-        ready: (nodes.nodes ?? []).filter((node) => node.status === "Ready").length,
-      },
-      pods: {
-        total: podList.length,
-        running: podList.filter((pod) => pod.phase === "Running").length,
-        pending: podList.filter((pod) => pod.phase === "Pending").length,
-        other: podList.filter((pod) => pod.phase !== "Running" && pod.phase !== "Pending").length,
-      },
-      deployments: (deps.items ?? []).length,
-      services: (svcs.items ?? []).length,
-      namespaces: (ns.namespaces ?? []).length,
-      events: {
-        total: eventList.length,
-        normal: eventList.filter((event) => event.type !== "Warning").length,
-        warnings: warningEvents.length,
-        recentWarnings: warningEvents.slice(0, 2).map((event) => `${event.reason}: ${event.message}`),
-      },
+      nodes: nodes.error
+        ? null
+        : {
+            total: (nodes.nodes ?? []).length,
+            ready: (nodes.nodes ?? []).filter((node) => node.status === "Ready").length,
+          },
+      pods: pods.error || !pods.counts ? null : podStats(pods.counts),
+      deployments: deps.error ? null : (deps.items ?? []).length,
+      services: svcs.error ? null : (svcs.items ?? []).length,
+      namespaces: ns.error ? null : (ns.namespaces ?? []).length,
+      events: events.error
+        ? null
+        : {
+            total: eventList.length,
+            normal: eventList.filter((event) => event.type !== "Warning").length,
+            warnings: warningEvents.length,
+            recentWarnings: warningEvents.slice(0, 2).map((event) => `${event.reason}: ${event.message}`),
+          },
+      unavailable: failures.map((failure) => failure.section),
     },
     updatedAt: Date.now(),
   };
@@ -181,16 +206,25 @@ export function ClusterOverview({
   }
   if (!stats) return <Spinner label="Loading overview" />;
 
-  const nodeReadiness = percent(stats.nodes.ready, stats.nodes.total);
-  const podHealth = percent(stats.pods.running, stats.pods.total);
-  const eventHealth = percent(stats.events.normal, stats.events.total);
+  const nodeReadiness = stats.nodes ? percent(stats.nodes.ready, stats.nodes.total) : 0;
+  const podHealth = stats.pods ? percent(stats.pods.running, stats.pods.total) : 0;
+  const eventHealth = stats.events ? percent(stats.events.normal, stats.events.total) : 0;
+  const degraded = stats.unavailable.length > 0;
+
+  const headerBits = [
+    stats.nodes ? `${stats.nodes.ready}/${stats.nodes.total} ready nodes` : null,
+    stats.pods ? `${stats.pods.running}/${stats.pods.total} running pods` : null,
+    `updated ${lastUpdated || "now"}`,
+  ].filter(Boolean);
 
   return (
     <PageShell>
       <PageHeader
         eyebrow="Cluster overview"
         title={context}
-        description={`${stats.nodes.ready}/${stats.nodes.total} ready nodes · ${stats.pods.running}/${stats.pods.total} running pods · updated ${lastUpdated || "now"}${error ? " · refresh failed" : ""}`}
+        description={`${headerBits.join(" · ")}${
+          degraded ? ` · ${stats.unavailable.join(", ")} unavailable — retry` : ""
+        }${error ? " · refresh failed" : ""}`}
         actions={
           <Button
             variant="outline"
@@ -206,46 +240,91 @@ export function ClusterOverview({
       />
 
       <div className="cat-metric-grid">
-        <MetricTile label="Nodes" value={`${stats.nodes.ready} / ${stats.nodes.total}`} description="Ready / total" tone={nodeReadiness === 100 ? "success" : "warning"} />
-        <MetricTile label="Pods" value={`${stats.pods.running} / ${stats.pods.total}`} description="Running / total" tone={stats.pods.other > 0 ? "warning" : "success"} />
-        <MetricTile label="Workloads" value={stats.deployments} description="Deployments" tone="primary" />
-        <MetricTile label="Services" value={stats.services} description="Cluster services" tone="info" />
-        <MetricTile label="Namespaces" value={stats.namespaces} description="Active namespaces" />
-        <MetricTile label="Warnings" value={stats.events.warnings} description="Recent events" tone={stats.events.warnings > 0 ? "warning" : "success"} />
+        <MetricTile
+          label="Nodes"
+          value={stats.nodes ? `${stats.nodes.ready} / ${stats.nodes.total}` : "—"}
+          description={stats.nodes ? "Ready / total" : "Count unavailable"}
+          tone={!stats.nodes ? "warning" : nodeReadiness === 100 ? "success" : "warning"}
+        />
+        <MetricTile
+          label="Pods"
+          value={stats.pods ? `${stats.pods.running} / ${stats.pods.total}` : "—"}
+          description={stats.pods ? "Running / total" : "Count unavailable"}
+          tone={!stats.pods ? "warning" : stats.pods.other > 0 ? "warning" : "success"}
+        />
+        <MetricTile
+          label="Workloads"
+          value={stats.deployments ?? "—"}
+          description={stats.deployments != null ? "Deployments" : "Count unavailable"}
+          tone="primary"
+        />
+        <MetricTile
+          label="Services"
+          value={stats.services ?? "—"}
+          description={stats.services != null ? "Cluster services" : "Count unavailable"}
+          tone="info"
+        />
+        <MetricTile
+          label="Namespaces"
+          value={stats.namespaces ?? "—"}
+          description={stats.namespaces != null ? "Active namespaces" : "Count unavailable"}
+        />
+        <MetricTile
+          label="Warnings"
+          value={stats.events ? stats.events.warnings : "—"}
+          description={stats.events ? "Recent events" : "Count unavailable"}
+          tone={!stats.events ? "warning" : stats.events.warnings > 0 ? "warning" : "success"}
+        />
       </div>
 
       <SectionPanel title="Cluster health" description="Readiness and recent event signal from Kubernetes API data.">
         <div className="cat-status-grid">
-          <StatusMeter
-            label="Node readiness"
-            value={nodeReadiness}
-            detail={`${stats.nodes.ready} ready / ${stats.nodes.total} total`}
-            tone={nodeReadiness === 100 ? "success" : "warning"}
-          />
-          <StatusMeter
-            label="Pod health"
-            value={podHealth}
-            detail={`${stats.pods.running} running / ${stats.pods.total} total`}
-            tone={stats.pods.other > 0 ? "warning" : "primary"}
-          />
-          <StatusMeter
-            label="Event health"
-            value={eventHealth}
-            detail={`${stats.events.normal} normal / ${stats.events.total} total`}
-            tone={stats.events.warnings > 0 ? "warning" : "success"}
-          />
+          {stats.nodes && (
+            <StatusMeter
+              label="Node readiness"
+              value={nodeReadiness}
+              detail={`${stats.nodes.ready} ready / ${stats.nodes.total} total`}
+              tone={nodeReadiness === 100 ? "success" : "warning"}
+            />
+          )}
+          {stats.pods && (
+            <StatusMeter
+              label="Pod health"
+              value={podHealth}
+              detail={`${stats.pods.running} running / ${stats.pods.total} total`}
+              tone={stats.pods.other > 0 ? "warning" : "primary"}
+            />
+          )}
+          {stats.events && (
+            <StatusMeter
+              label="Event health"
+              value={eventHealth}
+              detail={`${stats.events.normal} normal / ${stats.events.total} total`}
+              tone={stats.events.warnings > 0 ? "warning" : "success"}
+            />
+          )}
+          {!stats.nodes && !stats.pods && !stats.events && (
+            <EmptyState title="Health signal unavailable" description="Counts did not load — retry to fetch them again." />
+          )}
         </div>
       </SectionPanel>
 
       <div className="cat-overview-grid">
         <SectionPanel title="Pod distribution">
-          <DashboardSegmentBar
-            segments={[
-              { value: stats.pods.running, tone: "success", label: "Running" },
-              { value: stats.pods.pending, tone: "warning", label: "Pending" },
-              { value: stats.pods.other, tone: "danger", label: "Other" },
-            ]}
-          />
+          {stats.pods ? (
+            <DashboardSegmentBar
+              segments={[
+                { value: stats.pods.running, tone: "success", label: "Running" },
+                { value: stats.pods.pending, tone: "warning", label: "Pending" },
+                { value: stats.pods.other, tone: "danger", label: "Other" },
+              ]}
+            />
+          ) : (
+            <EmptyState
+              title="Pod counts unavailable"
+              description="The pod count didn't load in time — the rest of the overview is unaffected."
+            />
+          )}
           <div className="cat-inline-actions">
             <button type="button" className="cat-text-action" onClick={() => onOpenView?.("pods")}>View pods</button>
             <button type="button" className="cat-text-action" onClick={() => onOpenView?.("nodes")}>View nodes</button>
@@ -253,14 +332,16 @@ export function ClusterOverview({
         </SectionPanel>
 
         <SectionPanel title="Recent warnings">
-          {stats.events.recentWarnings.length > 0 ? (
+          {stats.events && stats.events.recentWarnings.length > 0 ? (
             <ul className="cat-dashboard-events">
               {stats.events.recentWarnings.map((message) => (
                 <li key={message}>{message}</li>
               ))}
             </ul>
-          ) : (
+          ) : stats.events ? (
             <EmptyState title="No warning events" description="The API did not return recent warning events." />
+          ) : (
+            <EmptyState title="Events unavailable" description="Event data didn't load — retry to fetch it again." />
           )}
           <div className="cat-inline-actions">
             <button type="button" className="cat-text-action" onClick={() => onOpenView?.("events")}>View events</button>

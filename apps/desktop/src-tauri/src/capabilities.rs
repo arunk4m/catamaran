@@ -57,6 +57,7 @@ pub fn build_registry_with(cache: Arc<ClientCache>) -> Registry {
         cache.clone(),
     ));
     reg.register(catamaran_kube::workloads::list_pods_capability(cache.clone()));
+    reg.register(catamaran_kube::workloads::pod_counts_capability(cache.clone()));
     reg.register(catamaran_kube::workloads::pods_for_selector_capability(
         cache.clone(),
     ));
