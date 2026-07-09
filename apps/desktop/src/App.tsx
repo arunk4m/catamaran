@@ -103,13 +103,17 @@ function activeTabOf(pane: AppPane | null): ViewTab | null {
 }
 
 /** Kinds that make sense to mirror across linked panes. */
+/** The embedded observability tools — kept alive in their own pane layer. */
+function isSpyglassKind(kind: ResourceKind): boolean {
+  return kind === "kiali" || kind === "grafana";
+}
+
 function isMirrorableKind(kind: ResourceKind): boolean {
   return (
     kind !== "settings" &&
     kind !== "newresource" &&
     kind !== "editresource" &&
-    kind !== "kiali" &&
-    kind !== "grafana"
+    !isSpyglassKind(kind)
   );
 }
 
@@ -403,20 +407,38 @@ export function App() {
       openSettings();
       return;
     }
-    const paneId = target?.paneId ?? deck.focusedPaneId;
+    let paneId = target?.paneId ?? deck.focusedPaneId;
+    // Locked spyglass panes: a Kiali/Grafana view is never replaced by sidebar
+    // or palette navigation. When such a pane is focused and the deck is split,
+    // the resource opens in the OTHER pane instead of hijacking the tool; the
+    // spyglass tab only closes when the user closes it. (Explicit paneId
+    // targets — e.g. an in-pane drill-down — are honored as-is.)
+    if (target?.paneId == null) {
+      const focused = deck.panes.find((p) => p.id === paneId);
+      const focusedActive = focused ? activeTabOf(focused) : null;
+      if (focusedActive && isSpyglassKind(focusedActive.kind)) {
+        const other = otherPane(deck, paneId);
+        if (other) paneId = other.id;
+      }
+    }
+    const routedPaneId = paneId;
     setDeck((d) => {
-      let next = openViewOn(d, paneId, cluster, kind);
-      next = focusPane(next, paneId);
-      // Linked cruising: the other pane follows onto the same kind.
+      let next = openViewOn(d, routedPaneId, cluster, kind);
+      next = focusPane(next, routedPaneId);
+      // Linked cruising: the other pane follows onto the same kind — but never
+      // onto a pane locked on a spyglass tool.
       if (next.linked && isSplit(next) && isMirrorableKind(kind)) {
-        const other = otherPane(next, paneId);
-        const otherCluster =
-          activeTabOf(other)?.cluster ?? other?.tabs.find((t) => t.cluster)?.cluster ?? null;
-        if (other && otherCluster) next = openViewOn(next, other.id, otherCluster, kind);
+        const other = otherPane(next, routedPaneId);
+        const otherActive = other ? activeTabOf(other) : null;
+        if (other && !(otherActive && isSpyglassKind(otherActive.kind))) {
+          const otherCluster =
+            otherActive?.cluster ?? other.tabs.find((t) => t.cluster)?.cluster ?? null;
+          if (otherCluster) next = openViewOn(next, other.id, otherCluster, kind);
+        }
       }
       return next;
     });
-    setPaneQuery((q) => ({ ...q, [paneId]: "" }));
+    setPaneQuery((q) => ({ ...q, [routedPaneId]: "" }));
   }
 
   /** Open the single workspace-level Settings tab, optionally at a section. */
@@ -793,8 +815,33 @@ export function App() {
             />
             {paneActiveTab && (
               <>
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-                  {paneKind === "settings" ? (
+                <div className="cat-pane-body">
+                  {/*
+                   * Keep-alive layer: every open Kiali/Grafana tab in this pane
+                   * stays mounted (just hidden when not active), so switching
+                   * tabs or splitting the deck never reloads the heavy embedded
+                   * tool — it's already warm. The foreground content below is
+                   * rendered only when the active tab is NOT a spyglass tool.
+                   */}
+                  {p.tabs.map((t) =>
+                    isSpyglassKind(t.kind) && t.cluster ? (
+                      <div
+                        key={`spyglass-${t.id}`}
+                        className="cat-pane-keepalive"
+                        hidden={t.id !== p.activeTabId}
+                      >
+                        <SpyglassView
+                          tool={t.kind as SpyglassTool}
+                          context={t.cluster}
+                          active={t.id === p.activeTabId}
+                          source={observability[t.kind as SpyglassTool]}
+                          onSaveView={(path) => saveSpyglassView(t.kind as SpyglassTool, path)}
+                          onOpenSettings={() => openSettings("observability")}
+                        />
+                      </div>
+                    ) : null,
+                  )}
+                  {isSpyglassKind(paneKind) ? null : paneKind === "settings" ? (
                     <SettingsView
                       key={`${paneActiveTab.id}:${settingsSectionNonce}`}
                       initialSection={settingsInitialSection}
@@ -834,15 +881,6 @@ export function App() {
                         onOpenView={(kind) => openView(paneCluster, kind, { paneId: p.id })}
                       />
                     </div>
-                  ) : paneCluster && (paneKind === "kiali" || paneKind === "grafana") ? (
-                    <SpyglassView
-                      key={paneActiveTab.id}
-                      tool={paneKind}
-                      context={paneCluster}
-                      source={observability[paneKind]}
-                      onSaveView={(path) => saveSpyglassView(paneKind, path)}
-                      onOpenSettings={() => openSettings("observability")}
-                    />
                   ) : paneCluster && paneKind === "portforwards" ? (
                     <PortForwardsView key={paneActiveTab.id} context={paneCluster} />
                   ) : paneCluster && paneKind === "helmreleases" ? (
@@ -961,9 +999,15 @@ export function App() {
         />
       )}
       <div className="cat-main">
-        {split ? (
-          <div className="cat-deck" ref={deckElRef}>
-            {renderPane(deck.panes[0], 0)}
+        {/*
+         * The deck wrapper is ALWAYS rendered (even single-pane) so the port
+         * pane keeps the same DOM parent when the deck splits — otherwise an
+         * embedded Kiali/Grafana iframe would reload every time you toggle the
+         * split. Splitting just appends the divider and starboard pane.
+         */}
+        <div className="cat-deck" ref={deckElRef}>
+          {renderPane(deck.panes[0], 0)}
+          {split && (
             <div
               className={`cat-pane-divider${dividerDragging ? " cat-pane-divider--dragging" : ""}`}
               role="separator"
@@ -972,11 +1016,9 @@ export function App() {
               onMouseDown={startDividerDrag}
               onDoubleClick={() => setDeck((d) => setRatio(d, 0.5))}
             />
-            {renderPane(deck.panes[1], 1)}
-          </div>
-        ) : (
-          renderPane(deck.panes[0], 0)
-        )}
+          )}
+          {split && renderPane(deck.panes[1], 1)}
+        </div>
       </div>
       <StatusBar
         panes={deck.panes.map((p, i) => ({

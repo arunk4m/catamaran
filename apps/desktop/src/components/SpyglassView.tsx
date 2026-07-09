@@ -23,6 +23,7 @@ export function SpyglassView({
   tool,
   context,
   source,
+  active = true,
   onSaveView,
   onOpenSettings,
   invoke = invokeCapability,
@@ -30,6 +31,12 @@ export function SpyglassView({
   tool: SpyglassTool;
   context: string | null;
   source: SpyglassSource;
+  /**
+   * Whether this view is the pane's active tab. The view stays mounted (and
+   * keeps loading) when inactive — this only steers focus/accessibility away
+   * from the hidden iframe so keyboard tabbing doesn't land inside it.
+   */
+  active?: boolean;
   /** Persist (or clear, with null) the tool's saved in-tool view. */
   onSaveView?: (path: string | null) => void;
   onOpenSettings?: () => void;
@@ -212,6 +219,8 @@ export function SpyglassView({
           src={`${state.embed.base}${state.src}`}
           title={`${label}${context ? ` — ${context}` : ""}`}
           allow="clipboard-read; clipboard-write; fullscreen"
+          tabIndex={active ? undefined : -1}
+          aria-hidden={active ? undefined : true}
         />
       )}
     </div>

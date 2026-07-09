@@ -136,4 +136,24 @@ describe("SpyglassView", () => {
     fireEvent.click(screen.getByText("Reload"));
     await waitFor(() => expect(prepareMock).toHaveBeenCalledTimes(2));
   });
+
+  it("steers focus away from the iframe when the tab is inactive (kept alive)", async () => {
+    prepareMock.mockResolvedValue({ prep: EMBED });
+    const { rerender } = render(
+      <SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} active={true} />,
+    );
+    const frame = await screen.findByTitle("Kiali — tusk-dev");
+    expect(frame.getAttribute("aria-hidden")).toBeNull();
+    expect(frame.getAttribute("tabindex")).toBeNull();
+
+    // Made inactive by a tab switch: the iframe stays mounted but drops out of
+    // the tab order and is hidden from assistive tech.
+    rerender(<SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} active={false} />);
+    const same = screen.getByTitle("Kiali — tusk-dev");
+    expect(same).toBe(frame); // not remounted
+    expect(same.getAttribute("aria-hidden")).toBe("true");
+    expect(same.getAttribute("tabindex")).toBe("-1");
+    // prepare did not run again on the active toggle.
+    expect(prepareMock).toHaveBeenCalledTimes(1);
+  });
 });

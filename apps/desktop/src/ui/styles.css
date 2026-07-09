@@ -3796,6 +3796,30 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cat-pane-ring) 45%, transparent);
 }
 
+/* A pane's content region. `position: relative` anchors the keep-alive layer. */
+.cat-pane-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: var(--cat-color-bg);
+}
+/*
+ * Keep-alive layer: an embedded spyglass tool that fills the body when its tab
+ * is active, and stays mounted (display:none) when it isn't — so the iframe is
+ * never torn down and reloaded on a tab switch or split toggle.
+ */
+.cat-pane-keepalive {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.cat-pane-keepalive[hidden] {
+  display: none;
+}
+
 .cat-pane-divider {
   flex: 0 0 5px;
   cursor: col-resize;
