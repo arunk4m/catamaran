@@ -117,7 +117,9 @@ export type ResourceKind =
   | "helmreleases"
   | "settings"
   | "newresource"
-  | "editresource";
+  | "editresource"
+  | "kiali"
+  | "grafana";
 
 export const RESOURCE_LABELS: Record<ResourceKind, string> = {
   overview: "Overview",
@@ -161,6 +163,8 @@ export const RESOURCE_LABELS: Record<ResourceKind, string> = {
   settings: "Settings",
   newresource: "New Resource",
   editresource: "Edit Resource",
+  kiali: "Kiali",
+  grafana: "Grafana",
 };
 
 export const K8S_KIND: Record<ResourceKind, string> = {
@@ -205,6 +209,8 @@ export const K8S_KIND: Record<ResourceKind, string> = {
   settings: "",
   newresource: "",
   editresource: "",
+  kiali: "",
+  grafana: "",
 };
 
 const CLUSTER_SCOPED: ResourceKind[] = [

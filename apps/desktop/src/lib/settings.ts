@@ -246,12 +246,14 @@ export type SpyglassTool = "kiali" | "grafana";
 /**
  * Where a tool lives: `auto` discovers it in the focused cluster on open,
  * `service` pins a namespace/service/port to port-forward, `url` uses an
- * already-exposed address as-is.
+ * already-exposed address as-is. `savedPath` is an in-tool view (path +
+ * query, e.g. a Kiali graph) the embedded page reopens on.
  */
-export type SpyglassSource =
+export type SpyglassSource = (
   | { mode: "auto" }
   | { mode: "service"; namespace: string; service: string; port: number }
-  | { mode: "url"; url: string };
+  | { mode: "url"; url: string }
+) & { savedPath?: string };
 
 export type ObservabilityConfig = Record<SpyglassTool, SpyglassSource>;
 
@@ -260,7 +262,19 @@ export const DEFAULT_OBSERVABILITY: ObservabilityConfig = {
   grafana: { mode: "auto" },
 };
 
+/** A savable in-tool view: an absolute path (+ query/hash), never a full URL. */
+export function validSavedPath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    !value.startsWith("//") &&
+    !value.includes("://") &&
+    value.length <= 2048
+  );
+}
+
 function sanitizeSource(value: unknown): SpyglassSource {
+  let source: SpyglassSource = { mode: "auto" };
   if (typeof value === "object" && value !== null) {
     const v = value as Record<string, unknown>;
     if (
@@ -272,13 +286,15 @@ function sanitizeSource(value: unknown): SpyglassSource {
       v.port > 0 &&
       v.port <= 65535
     ) {
-      return { mode: "service", namespace: v.namespace, service: v.service, port: v.port };
+      source = { mode: "service", namespace: v.namespace, service: v.service, port: v.port };
+    } else if (v.mode === "url" && typeof v.url === "string" && /^https?:\/\//.test(v.url)) {
+      source = { mode: "url", url: v.url };
     }
-    if (v.mode === "url" && typeof v.url === "string" && /^https?:\/\//.test(v.url)) {
-      return { mode: "url", url: v.url };
+    if (validSavedPath(v.savedPath)) {
+      source.savedPath = v.savedPath;
     }
   }
-  return { mode: "auto" };
+  return source;
 }
 
 export function loadObservabilityConfig(): ObservabilityConfig {

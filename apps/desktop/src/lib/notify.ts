@@ -18,15 +18,6 @@ export const notify = {
   info(message: string, description?: string): void {
     toast(message, description ? { description } : undefined);
   },
-  /** Start a long-running operation; pass the returned id to `resolve`. */
-  loading(message: string): string | number {
-    return toast.loading(message);
-  },
-  /** Settle a `loading` toast in place with the operation's outcome. */
-  resolve(id: string | number, ok: boolean, message: string, description?: string): void {
-    if (ok) toast.success(message, { id, description, duration: 4000 });
-    else toast.error(message, { id, description, duration: 8000 });
-  },
   /**
    * A newer app version is available. Carries a "View update" action that takes
    * the user to the Updates section; stays up for a while since it's passive.

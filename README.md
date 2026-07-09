@@ -76,10 +76,12 @@ act on it, and a subtle brand-colored indicator shows which pane is live.
   follow, previous-instance logs, timestamps, since/tail windows, and multi-container export.
 - **Helm** — browse installed releases and inspect release details.
 - **Metrics** — node and pod metrics (metrics-server) with usage overviews and sparklines.
-- **Spyglass: Kiali & Grafana** — one click opens your service-mesh topology or dashboards in
-  a dedicated Catamaran window: the tool is auto-discovered in the focused cluster and reached
-  over a managed port-forward (both refuse iframe embedding, so they get real windows). Pin a
-  service or an external URL per tool in *Settings → Observability*.
+- **Spyglass: Kiali & Grafana, embedded** — one click opens your service-mesh topology or
+  dashboards *inside* Catamaran as a workspace tab. The tool is auto-discovered in the focused
+  cluster and reached over a managed port-forward; a loopback relay strips the frame-blocking
+  headers both tools send so they render in-app. Kiali opens on its animated traffic graph
+  scoped to the mesh namespaces, and you can **save a view** to reopen exactly where you left
+  off. Pin a service or an external URL per tool in *Settings → Observability*.
 - **Command palette** — <kbd>⌘K</kbd> keyboard-first navigation with frecency-ranked results
   and action commands, including Split View control.
 - **Local-first** — talks directly to your API servers with your kubeconfig credentials. No

@@ -100,6 +100,7 @@ pub mod configmaps;
 pub mod cronjobs;
 pub mod daemonsets;
 pub mod deployments;
+pub mod embed;
 pub mod endpointslices;
 pub mod events;
 pub mod exec;

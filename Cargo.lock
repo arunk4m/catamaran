@@ -545,10 +545,14 @@ name = "catamaran-kube"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "catamaran-capability",
  "flate2",
  "futures",
  "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "k8s-openapi",
  "kube",
  "reqwest",

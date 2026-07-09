@@ -198,6 +198,29 @@ describe("observability (spyglass) config", () => {
     });
   });
 
+  it("round-trips and sanitizes saved views", async () => {
+    const { loadObservabilityConfig, saveObservabilityConfig } = await import("./settings");
+    saveObservabilityConfig({
+      kiali: { mode: "auto", savedPath: "/kiali/console/graph/namespaces/?namespaces=aiapp" },
+      grafana: { mode: "auto" },
+    });
+    expect(loadObservabilityConfig().kiali.savedPath).toBe(
+      "/kiali/console/graph/namespaces/?namespaces=aiapp",
+    );
+
+    // Full URLs and protocol-relative paths never survive as saved views.
+    localStorage.setItem(
+      "catamaran.observability",
+      JSON.stringify({
+        kiali: { mode: "auto", savedPath: "https://evil.example/x" },
+        grafana: { mode: "auto", savedPath: "//evil.example/x" },
+      }),
+    );
+    const cfg = loadObservabilityConfig();
+    expect(cfg.kiali.savedPath).toBeUndefined();
+    expect(cfg.grafana.savedPath).toBeUndefined();
+  });
+
   it("sanitizes garbage back to auto", async () => {
     const { loadObservabilityConfig } = await import("./settings");
     localStorage.setItem("catamaran.observability", "not json");

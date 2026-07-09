@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use catamaran_capability::{Annotations, Capability, CapabilityError};
-use k8s_openapi::api::core::v1::{Service, ServicePort};
+use k8s_openapi::api::core::v1::{Namespace, Service, ServicePort};
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::ListParams;
 use kube::Api;
@@ -157,8 +157,25 @@ pub struct DiscoveredTool {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoverOut {
     pub tools: Vec<DiscoveredTool>,
+    /// Namespaces that are part of the Istio mesh (sidecar-injected or
+    /// ambient) — what Kiali's traffic graph should open on.
+    pub mesh_namespaces: Vec<String>,
+}
+
+/// Is a namespace part of the mesh? Covers sidecar injection
+/// (`istio-injection=enabled`, `istio.io/rev`) and ambient
+/// (`istio.io/dataplane-mode` other than "none").
+pub(crate) fn is_mesh_namespace(labels: &std::collections::BTreeMap<String, String>) -> bool {
+    if labels.get("istio-injection").map(String::as_str) == Some("enabled") {
+        return true;
+    }
+    if labels.contains_key("istio.io/rev") {
+        return true;
+    }
+    matches!(labels.get("istio.io/dataplane-mode"), Some(mode) if mode != "none")
 }
 
 fn handler_err<E: std::fmt::Display>(e: E) -> CapabilityError {
@@ -235,7 +252,7 @@ pub fn discover_capability(cache: Arc<ClientCache>) -> Capability {
 
                     // Pass 2: attach ingress URLs (only worth the walk if pass 1 hit).
                     if !found.is_empty() {
-                        let ing_api: Api<Ingress> = Api::all(client);
+                        let ing_api: Api<Ingress> = Api::all(client.clone());
                         let mut ingresses: Vec<Ingress> = Vec::new();
                         let mut continue_token: Option<String> = None;
                         loop {
@@ -264,8 +281,46 @@ pub fn discover_capability(cache: Arc<ClientCache>) -> Capability {
                         }
                     }
 
+                    // Pass 3: mesh namespaces — what Kiali's graph opens on.
+                    let mut mesh_namespaces: Vec<String> = Vec::new();
+                    if found.iter().any(|t| t.tool == "kiali") {
+                        let ns_api: Api<Namespace> = Api::all(client.clone());
+                        let mut continue_token: Option<String> = None;
+                        loop {
+                            let mut params = ListParams::default().limit(DISCOVER_PAGE_SIZE);
+                            if let Some(token) = &continue_token {
+                                params = params.continue_token(token);
+                            }
+                            let page = tokio::time::timeout(
+                                request_timeout().saturating_mul(2),
+                                ns_api.list(&params),
+                            )
+                            .await
+                            .map_err(|_| {
+                                CapabilityError::Handler("namespace discovery timed out".into())
+                            })?
+                            .map_err(handler_err)?;
+                            for ns in &page.items {
+                                let labels = ns.metadata.labels.clone().unwrap_or_default();
+                                if is_mesh_namespace(&labels) {
+                                    if let Some(name) = ns.metadata.name.clone() {
+                                        mesh_namespaces.push(name);
+                                    }
+                                }
+                            }
+                            match page.metadata.continue_ {
+                                Some(token) if !token.is_empty() => continue_token = Some(token),
+                                _ => break,
+                            }
+                        }
+                        mesh_namespaces.sort();
+                    }
+
                     sort_tools(&mut found);
-                    Ok::<_, CapabilityError>(DiscoverOut { tools: found })
+                    Ok::<_, CapabilityError>(DiscoverOut {
+                        tools: found,
+                        mesh_namespaces,
+                    })
                 };
 
                 let budget = request_timeout().saturating_mul(4);
@@ -668,6 +723,19 @@ mod classify_tests {
             name: name.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn mesh_namespaces_cover_sidecar_and_ambient() {
+        // Ambient (the tuskira shape).
+        assert!(is_mesh_namespace(&labels(&[("istio.io/dataplane-mode", "ambient")])));
+        // Classic sidecar injection, and revisioned injection.
+        assert!(is_mesh_namespace(&labels(&[("istio-injection", "enabled")])));
+        assert!(is_mesh_namespace(&labels(&[("istio.io/rev", "1-22-1")])));
+        // Explicit opt-outs and unlabeled namespaces are out.
+        assert!(!is_mesh_namespace(&labels(&[("istio.io/dataplane-mode", "none")])));
+        assert!(!is_mesh_namespace(&labels(&[("istio-injection", "disabled")])));
+        assert!(!is_mesh_namespace(&labels(&[])));
     }
 
     #[test]

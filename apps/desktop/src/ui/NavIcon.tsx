@@ -26,6 +26,7 @@ import {
   Server,
   ServerCog,
   Settings,
+  Share2,
   Shield,
   ShieldCheck,
   ShipWheel,
@@ -79,6 +80,8 @@ const RESOURCE_ICONS: Record<string, LucideIcon> = {
   helmreleases: ShipWheel,
   settings: Settings,
   newresource: FilePlus2,
+  kiali: Share2,
+  grafana: Gauge,
 };
 
 export function iconForResourceKind(kind: string): LucideIcon {

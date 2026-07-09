@@ -1,5 +1,5 @@
-import { invokeCapability, invokeCommand, type Invoker } from "../transport/transport";
-import type { SpyglassSource, SpyglassTool } from "./settings";
+import { invokeCapability, type Invoker } from "../transport/transport";
+import { validSavedPath, type SpyglassSource, type SpyglassTool } from "./settings";
 
 export const SPYGLASS_LABELS: Record<SpyglassTool, string> = {
   kiali: "Kiali",
@@ -33,14 +33,23 @@ export interface SpyglassForward {
   localPort: number;
 }
 
-/** Find observability tools in a context via `obs.discover`. */
+export interface DiscoverOutcome {
+  tools?: DiscoveredTool[];
+  meshNamespaces?: string[];
+  error?: string;
+}
+
+/** Find observability tools (and mesh namespaces) via `obs.discover`. */
 export async function discoverTools(
   context: string,
   invoke: Invoker = invokeCapability,
-): Promise<{ tools?: DiscoveredTool[]; error?: string }> {
+): Promise<DiscoverOutcome> {
   try {
-    const out = await invoke<{ tools: DiscoveredTool[] }>("obs.discover", { context });
-    return { tools: out.tools };
+    const out = await invoke<{ tools: DiscoveredTool[]; meshNamespaces: string[] }>(
+      "obs.discover",
+      { context },
+    );
+    return { tools: out.tools, meshNamespaces: out.meshNamespaces };
   } catch (e) {
     return { error: String(e) };
   }
@@ -105,36 +114,91 @@ export async function listSpyglassForwards(
   }
 }
 
-/** The discovered row for `tool`, if any (first match wins). */
+/** Start (or reuse) the embeddable relay for a service via `obs.embedStart`. */
+export async function embedStart(
+  context: string,
+  namespace: string,
+  service: string,
+  port: number,
+  invoke: Invoker = invokeCapability,
+): Promise<{ url?: string; localPort?: number; reused?: boolean; error?: string }> {
+  try {
+    const out = await invoke<{ url: string; localPort: number; reused: boolean }>(
+      "obs.embedStart",
+      { context, namespace, service, port },
+    );
+    return { url: out.url, localPort: out.localPort, reused: out.reused };
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+
+/** Stop an embed relay (and its tunnel) via `obs.embedStop`. */
+export async function embedStop(
+  forward: Omit<SpyglassForward, "localPort">,
+  invoke: Invoker = invokeCapability,
+): Promise<{ stopped?: boolean; error?: string }> {
+  try {
+    const out = await invoke<{ stopped: boolean }>("obs.embedStop", { ...forward });
+    return { stopped: out.stopped };
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+
+/** The discovered row for `tool`, if any (rows arrive ranked; first wins). */
 export function pickDiscovered(tools: DiscoveredTool[], tool: SpyglassTool): DiscoveredTool | null {
   return tools.find((t) => t.tool === tool) ?? null;
 }
 
-/** Window title for a tool opened against a context. */
-export function spyglassTitle(tool: SpyglassTool, context: string | null): string {
-  const label = SPYGLASS_LABELS[tool];
-  return context ? `${label} — ${context}` : label;
+/**
+ * Kiali's traffic-graph console route: versioned-app graph over the mesh
+ * namespaces with traffic animation enabled — the view you actually want
+ * when you open a mesh tool, not an empty overview.
+ */
+export function kialiDefaultPath(prefix: string, meshNamespaces: string[]): string {
+  const params = new URLSearchParams({
+    graphType: "versionedApp",
+    duration: "600",
+    refresh: "15000",
+    animation: "true",
+  });
+  if (meshNamespaces.length > 0) {
+    params.set("namespaces", meshNamespaces.join(","));
+  }
+  return `${prefix}/console/graph/namespaces/?${params.toString()}`;
 }
 
-/** How an open resolved: the URL plus how we got there. */
-export interface SpyglassOpening {
+/** How an embed resolved: everything the view needs to render an iframe. */
+export interface SpyglassEmbed {
+  kind: "embed";
+  /** Loopback base of the embed relay, e.g. `http://127.0.0.1:52123`. */
+  base: string;
+  /** Path the iframe should open on (saved view or the tool default). */
+  initialPath: string;
+  /** The tool's default view (Reset view returns here). */
+  defaultPath: string;
+  target: { namespace: string; service: string; port: number };
+  meshNamespaces: string[];
+}
+
+export interface SpyglassExternal {
+  kind: "external";
+  /** Configured external URL — frame-blocked, so it opens in the browser. */
   url: string;
-  via: "url" | "forward";
-  localPort?: number;
-  probe?: ProbeResult;
 }
 
-export type SpyglassOutcome = { opening?: SpyglassOpening; error?: string };
+export type SpyglassPrep = SpyglassEmbed | SpyglassExternal;
+export type SpyglassPrepOutcome = { prep?: SpyglassPrep; error?: string };
 
-// Remember what discovery found per (tool, context) so re-opens skip the scan.
-const discoveredCache = new Map<string, DiscoveredTool>();
+// Remember discovery per context so re-opens skip the cluster scan.
+const discoveredCache = new Map<string, { tools: DiscoveredTool[]; meshNamespaces: string[] }>();
 
 /** Test hook: forget cached discovery results. */
 export function resetSpyglassCache(): void {
   discoveredCache.clear();
 }
 
-/** Give a just-started forward a beat to come up before probing. */
 const PROBE_RETRIES = 3;
 const PROBE_RETRY_DELAY_MS = 700;
 
@@ -151,89 +215,87 @@ async function probeWithRetry(url: string, invoke: Invoker): Promise<ProbeResult
   return last;
 }
 
+async function discoverCached(context: string, invoke: Invoker) {
+  const hit = discoveredCache.get(context);
+  if (hit) return { ...hit };
+  const { tools, meshNamespaces, error } = await discoverTools(context, invoke);
+  if (error) return { error };
+  const entry = { tools: tools ?? [], meshNamespaces: meshNamespaces ?? [] };
+  discoveredCache.set(context, entry);
+  return { ...entry };
+}
+
 /**
- * Resolve where `tool` should open for `context`: a configured URL is used
- * as-is; otherwise the tool's service (configured or discovered) is
- * port-forwarded and the local address is probed until it answers.
+ * Prepare `tool` for embedding against `context`: resolve where it lives
+ * (pinned or discovered), start the embed relay, find the tool's path
+ * prefix, and wait until the relay answers. URL-mode sources come back as
+ * `external` — a remote origin still sends its frame blockers, so it cannot
+ * be embedded.
  */
-export async function resolveSpyglassOpening(
+export async function prepareEmbed(
   tool: SpyglassTool,
   context: string | null,
   source: SpyglassSource,
   invoke: Invoker = invokeCapability,
-): Promise<SpyglassOutcome> {
+): Promise<SpyglassPrepOutcome> {
   const label = SPYGLASS_LABELS[tool];
   if (source.mode === "url") {
-    const { probe } = await probeUrl(source.url, invoke);
-    return { opening: { url: source.url, via: "url", probe } };
+    return { prep: { kind: "external", url: source.url } };
   }
-
   if (!context) {
     return { error: `Open a cluster first — ${label} is looked up in the focused context.` };
   }
 
   let target: { namespace: string; service: string; port: number };
+  let meshNamespaces: string[] = [];
   if (source.mode === "service") {
-    target = source;
-  } else {
-    const cacheKey = `${tool}:${context}`;
-    let found = discoveredCache.get(cacheKey) ?? null;
-    if (!found) {
-      const { tools, error } = await discoverTools(context, invoke);
-      if (error) return { error };
-      found = pickDiscovered(tools ?? [], tool);
-      if (found) discoveredCache.set(cacheKey, found);
+    target = { namespace: source.namespace, service: source.service, port: source.port };
+    if (tool === "kiali") {
+      const found = await discoverCached(context, invoke);
+      meshNamespaces = found.meshNamespaces ?? [];
     }
-    if (!found) {
+  } else {
+    const found = await discoverCached(context, invoke);
+    if (found.error) return { error: found.error };
+    const row = pickDiscovered(found.tools ?? [], tool);
+    if (!row) {
       return {
         error: `No ${label} service found in ${context}. Pin one in Settings → Observability.`,
       };
     }
-    target = found;
+    target = { namespace: row.namespace, service: row.service, port: row.port };
+    meshNamespaces = found.meshNamespaces ?? [];
   }
 
-  const { localPort, error } = await spyglassForwardStart(
+  const { url: base, error } = await embedStart(
     context,
     target.namespace,
     target.service,
     target.port,
     invoke,
   );
-  if (error || localPort == null) {
-    return { error: error ?? `Port-forward to ${target.service} failed.` };
+  if (error || !base) {
+    return { error: error ?? `Embed relay for ${target.service} failed to start.` };
   }
 
-  const url = `http://127.0.0.1:${localPort}`;
-  const probe = await probeWithRetry(url, invoke);
+  // Path prefix: kiali usually serves under /kiali (its web_root); fall back
+  // to the root for installs that serve at /.
+  let prefix = "";
+  if (tool === "kiali") {
+    const { probe } = await probeUrl(`${base}/kiali/`, invoke);
+    prefix = probe?.ok && probe.status === 200 ? "/kiali" : "";
+  }
+  const defaultPath = tool === "kiali" ? kialiDefaultPath(prefix, meshNamespaces) : "/";
+  const initialPath = validSavedPath(source.savedPath) ? source.savedPath : defaultPath;
+
+  const probe = await probeWithRetry(`${base}${tool === "kiali" ? `${prefix}/` : "/"}`, invoke);
   if (probe && !probe.ok) {
     return {
-      error: `${label} is forwarded to ${url} but not answering: ${probe.error ?? "no response"}`,
+      error: `${label} is relayed at ${base} but not answering: ${probe.error ?? "no response"}`,
     };
   }
-  return { opening: { url, via: "forward", localPort, probe } };
-}
 
-/**
- * Open `tool` in its dedicated window: resolve the URL (forwarding if
- * needed), then hand it to the shell. Returns the opening for status text.
- */
-export async function openSpyglassTool(
-  tool: SpyglassTool,
-  context: string | null,
-  source: SpyglassSource,
-  invoke: Invoker = invokeCapability,
-  command: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T> = invokeCommand,
-): Promise<SpyglassOutcome> {
-  const outcome = await resolveSpyglassOpening(tool, context, source, invoke);
-  if (!outcome.opening) return outcome;
-  try {
-    await command("open_tool_window", {
-      tool,
-      url: outcome.opening.url,
-      title: spyglassTitle(tool, context),
-    });
-  } catch (e) {
-    return { error: String(e) };
-  }
-  return outcome;
+  return {
+    prep: { kind: "embed", base, initialPath, defaultPath, target, meshNamespaces },
+  };
 }

@@ -21,15 +21,26 @@ const MODE_CHOICES: Array<{ id: SpyglassSource["mode"]; label: string; descripti
   { id: "url", label: "External URL", description: "Open an exposed address as-is" },
 ];
 
-/** Blank-but-valid shapes used when switching a tool's source mode. */
-function defaultForMode(mode: SpyglassSource["mode"], tool: SpyglassTool): SpyglassSource {
-  if (mode === "service") {
-    return tool === "kiali"
-      ? { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 }
-      : { mode: "service", namespace: "", service: "grafana", port: 80 };
-  }
-  if (mode === "url") return { mode: "url", url: "" };
-  return { mode: "auto" };
+/**
+ * Blank-but-valid shapes used when switching a tool's source mode. The saved
+ * in-tool view survives a mode switch — it describes a place inside the
+ * tool, not where the tool lives.
+ */
+function defaultForMode(
+  mode: SpyglassSource["mode"],
+  tool: SpyglassTool,
+  savedPath?: string,
+): SpyglassSource {
+  const base: SpyglassSource =
+    mode === "service"
+      ? tool === "kiali"
+        ? { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 }
+        : { mode: "service", namespace: "", service: "grafana", port: 80 }
+      : mode === "url"
+        ? { mode: "url", url: "" }
+        : { mode: "auto" };
+  if (savedPath) base.savedPath = savedPath;
+  return base;
 }
 
 /**
@@ -141,7 +152,9 @@ export function SpyglassSettings({
                   key={id}
                   type="button"
                   className={`cat-settings-mode${source.mode === id ? " cat-settings-mode--active" : ""}`}
-                  onClick={() => source.mode !== id && setSource(tool, defaultForMode(id, tool))}
+                  onClick={() =>
+                    source.mode !== id && setSource(tool, defaultForMode(id, tool, source.savedPath))
+                  }
                   aria-pressed={source.mode === id}
                 >
                   <span>
@@ -204,6 +217,21 @@ export function SpyglassSettings({
                 <Button variant="ghost" size="sm" onClick={() => void openExternalUrl(hint)}>
                   <ExternalLink data-icon="inline-start" />
                   Open
+                </Button>
+              </p>
+            )}
+            {source.savedPath && (
+              <p className="cat-spyglass__hint">
+                Saved view: <code>{source.savedPath}</code>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const { savedPath: _cleared, ...rest } = source;
+                    setSource(tool, rest as SpyglassSource);
+                  }}
+                >
+                  Clear
                 </Button>
               </p>
             )}

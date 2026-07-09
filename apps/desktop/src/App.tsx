@@ -54,7 +54,8 @@ import {
   type ObservabilityConfig,
   type SpyglassTool,
 } from "./lib/settings";
-import { openSpyglassTool, SPYGLASS_LABELS } from "./lib/spyglass";
+import { SPYGLASS_LABELS } from "./lib/spyglass";
+import { SpyglassView } from "./components/SpyglassView";
 import {
   createDeck,
   splitDeck,
@@ -103,7 +104,13 @@ function activeTabOf(pane: AppPane | null): ViewTab | null {
 
 /** Kinds that make sense to mirror across linked panes. */
 function isMirrorableKind(kind: ResourceKind): boolean {
-  return kind !== "settings" && kind !== "newresource" && kind !== "editresource";
+  return (
+    kind !== "settings" &&
+    kind !== "newresource" &&
+    kind !== "editresource" &&
+    kind !== "kiali" &&
+    kind !== "grafana"
+  );
 }
 
 export function App() {
@@ -323,27 +330,51 @@ export function App() {
   const activeKind: ResourceKind = activeTab?.kind ?? "pods";
 
   /**
-   * Open Kiali/Grafana in its dedicated window against the focused cluster.
-   * One loading toast tracks the whole voyage: discover → forward → probe →
-   * window; failures resolve it with the reason and a Settings pointer.
+   * Open (or focus) the singleton workspace tab for a spyglass tool. The tab
+   * always targets the focused cluster; re-opening from another cluster
+   * retargets it instead of stacking a second Kiali.
    */
   function openSpyglass(tool: SpyglassTool) {
-    const label = SPYGLASS_LABELS[tool];
-    const id = notify.loading(`Opening ${label}…`);
-    void openSpyglassTool(tool, activeCluster, observability[tool]).then((outcome) => {
-      if (outcome.opening) {
-        const via =
-          outcome.opening.via === "forward"
-            ? `port-forwarded to 127.0.0.1:${outcome.opening.localPort}`
-            : outcome.opening.url;
-        const auth = outcome.opening.probe?.authRedirect
-          ? " — sign in inside the window"
-          : "";
-        notify.resolve(id, true, `${label} is up`, `${via}${auth}`);
-      } else {
-        notify.resolve(id, false, `Couldn't open ${label}`, outcome.error);
+    const cluster = activeCluster;
+    if (!cluster) {
+      notify.error(
+        `Open a cluster first`,
+        `${SPYGLASS_LABELS[tool]} is looked up in the focused context.`,
+      );
+      return;
+    }
+    setDeck((d) => {
+      for (const p of d.panes) {
+        const existing = p.tabs.find((t) => t.kind === tool);
+        if (existing) {
+          return focusPane(
+            updatePane(d, p.id, (x) => ({
+              ...x,
+              activeTabId: existing.id,
+              tabs: x.tabs.map((t) => (t.id === existing.id ? { ...t, cluster } : t)),
+            })),
+            p.id,
+          );
+        }
       }
+      const id = tabIdRef.current++;
+      return focusPane(
+        updatePane(d, d.focusedPaneId, (p) => ({
+          ...p,
+          tabs: [...p.tabs, { id, cluster, kind: tool as ResourceKind }],
+          activeTabId: id,
+        })),
+        d.focusedPaneId,
+      );
     });
+  }
+
+  /** Persist (or clear) a spyglass tool's saved in-tool view. */
+  function saveSpyglassView(tool: SpyglassTool, path: string | null) {
+    const source = { ...observability[tool] };
+    if (path) source.savedPath = path;
+    else delete source.savedPath;
+    changeObservability({ ...observability, [tool]: source });
   }
   // Every cluster with an open tab, across both panes (drives the sidebar tree).
   const clusters = orderContexts(
@@ -803,6 +834,15 @@ export function App() {
                         onOpenView={(kind) => openView(paneCluster, kind, { paneId: p.id })}
                       />
                     </div>
+                  ) : paneCluster && (paneKind === "kiali" || paneKind === "grafana") ? (
+                    <SpyglassView
+                      key={paneActiveTab.id}
+                      tool={paneKind}
+                      context={paneCluster}
+                      source={observability[paneKind]}
+                      onSaveView={(path) => saveSpyglassView(paneKind, path)}
+                      onOpenSettings={() => openSettings("observability")}
+                    />
                   ) : paneCluster && paneKind === "portforwards" ? (
                     <PortForwardsView key={paneActiveTab.id} context={paneCluster} />
                   ) : paneCluster && paneKind === "helmreleases" ? (
