@@ -130,16 +130,23 @@ pub struct SsoLoginOut {
     pub ok: bool,
 }
 
+/// After a refresh, pre-build clients for this many of the profile's contexts
+/// so the UI's next request doesn't pay the exec plugin's cold start.
+const WARM_CONTEXTS: usize = 4;
+
 /// `aws.ssoLogin` — run `aws sso login --profile <p>`; the CLI opens the
 /// access portal in the browser for approval. On success every cached kube
-/// client is dropped so the next request authenticates with fresh credentials.
-pub fn sso_login_capability(cache: Arc<ClientCache>) -> Capability {
+/// client is dropped so the next request authenticates with fresh
+/// credentials, and the refreshed profile's contexts are re-warmed in the
+/// background (single-flight with any UI request for the same context).
+pub fn sso_login_capability(cache: Arc<ClientCache>, default_paths: Vec<PathBuf>) -> Capability {
     Capability::typed::<SsoLoginIn, SsoLoginOut, _, _>(
         "aws.ssoLogin",
         "refresh an AWS SSO session via `aws sso login` (opens the access portal in a browser), then reconnect clusters",
         Annotations::default(),
         move |input: SsoLoginIn| {
             let cache = cache.clone();
+            let default_paths = default_paths.clone();
             async move {
                 if !valid_profile_name(&input.profile) {
                     return Err(CapabilityError::Handler(format!(
@@ -169,6 +176,20 @@ pub fn sso_login_capability(cache: Arc<ClientCache>) -> Capability {
                 }
                 // Fresh SSO session: drop every cached client so panes reconnect.
                 cache.invalidate_all().await;
+                // Warm the refreshed profile's contexts in the background: the
+                // first token mint after a login is the slowest (CLI cold start
+                // + role-credential exchange), so pay it here instead of on the
+                // user's next click.
+                if let Ok(config) = load_kubeconfigs(&default_paths) {
+                    if let Some(contexts) = pinned_profiles(&config).get(&input.profile) {
+                        for context in contexts.iter().take(WARM_CONTEXTS).cloned() {
+                            let cache = cache.clone();
+                            tokio::spawn(async move {
+                                let _ = cache.get(&context).await;
+                            });
+                        }
+                    }
+                }
                 Ok(SsoLoginOut { ok: true })
             }
         },
@@ -295,7 +316,7 @@ users:
         assert_eq!(profiles.id, "aws.ssoProfiles");
         assert!(profiles.annotations.read_only);
 
-        let login = sso_login_capability(ClientCache::new(PathBuf::from("/x")));
+        let login = sso_login_capability(ClientCache::new(PathBuf::from("/x")), vec![]);
         assert_eq!(login.id, "aws.ssoLogin");
         assert!(!login.annotations.read_only);
         assert!(!login.annotations.destructive);
@@ -319,7 +340,7 @@ users:
     #[tokio::test]
     async fn sso_login_rejects_malformed_profiles_before_spawning() {
         let mut reg = catamaran_capability::Registry::new();
-        reg.register(sso_login_capability(ClientCache::new(PathBuf::from("/x"))));
+        reg.register(sso_login_capability(ClientCache::new(PathBuf::from("/x")), vec![]));
         let err = reg
             .invoke("aws.ssoLogin", serde_json::json!({ "profile": "bad profile; rm" }))
             .await

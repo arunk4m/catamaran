@@ -1,18 +1,32 @@
 //! Caches authenticated kube-rs clients per context so capabilities don't
 //! re-parse the kubeconfig and rebuild TLS config on every invocation.
+//!
+//! Builds are single-flight per context: when several views request the same
+//! context at once (e.g. right after credentials are refreshed and the cache
+//! is flushed), they share ONE client build instead of racing — a build spawns
+//! the kubeconfig's exec plugin, and a thundering herd of `aws eks get-token`
+//! processes is slow enough to blow request budgets.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use kube::Client;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::connect::build_client;
 
+/// Upper bound for one client build (kubeconfig parse + exec plugin + TLS).
+/// Frees the per-context slot if an exec plugin hangs indefinitely.
+const BUILD_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// One context's cached client, behind its own async lock (the single-flight).
+type Slot = Arc<Mutex<Option<Client>>>;
+
 pub struct ClientCache {
     paths: RwLock<Vec<PathBuf>>,
-    clients: Mutex<HashMap<String, Client>>,
+    clients: Mutex<HashMap<String, Slot>>,
 }
 
 impl ClientCache {
@@ -41,17 +55,30 @@ impl ClientCache {
         self.paths.read().await.clone()
     }
 
-    /// Return a cached client for `context`, building and caching one on a miss.
-    pub async fn get(&self, context: &str) -> Result<Client, String> {
-        if let Some(client) = self.clients.lock().await.get(context).cloned() {
-            return Ok(client);
-        }
-        let paths = self.paths().await;
-        let client = build_client(&paths, context).await?;
+    /// The per-context slot, created on first use.
+    async fn slot(&self, context: &str) -> Slot {
         self.clients
             .lock()
             .await
-            .insert(context.to_string(), client.clone());
+            .entry(context.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Return a cached client for `context`, building one on a miss. Callers
+    /// racing on the same context await the in-flight build rather than
+    /// starting their own.
+    pub async fn get(&self, context: &str) -> Result<Client, String> {
+        let slot = self.slot(context).await;
+        let mut guard = slot.lock().await;
+        if let Some(client) = guard.as_ref() {
+            return Ok(client.clone());
+        }
+        let paths = self.paths().await;
+        let client = tokio::time::timeout(BUILD_TIMEOUT, build_client(&paths, context))
+            .await
+            .map_err(|_| "building the cluster client timed out".to_string())??;
+        *guard = Some(client.clone());
         Ok(client)
     }
 
@@ -85,6 +112,16 @@ mod tests {
         let cache = ClientCache::new(path.clone());
         assert!(cache.get("does-not-exist").await.is_err());
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_gets_for_one_context_share_the_slot() {
+        // Both callers race the same missing context: they must serialize on
+        // the slot (no deadlock, no panic) and both surface the build error.
+        let cache = ClientCache::new(PathBuf::from("/nonexistent-kubeconfig"));
+        let (a, b) = tokio::join!(cache.get("ctx"), cache.get("ctx"));
+        assert!(a.is_err());
+        assert!(b.is_err());
     }
 
     #[tokio::test]
