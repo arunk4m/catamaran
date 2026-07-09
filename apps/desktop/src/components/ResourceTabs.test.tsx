@@ -61,3 +61,21 @@ describe("ResourceTabs", () => {
     expect(h.onCloseToRight).not.toHaveBeenCalled();
   });
 });
+
+describe("trailing controls", () => {
+  it("renders trailing content pinned to the strip", () => {
+    render(
+      <ResourceTabs
+        tabs={tabs}
+        activeId={1}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onCloseOthers={vi.fn()}
+        onCloseToRight={vi.fn()}
+        onCloseAll={vi.fn()}
+        trailing={<button aria-label="Split the deck">split</button>}
+      />,
+    );
+    expect(screen.getByLabelText("Split the deck")).toBeDefined();
+  });
+});

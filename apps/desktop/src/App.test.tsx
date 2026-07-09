@@ -101,6 +101,8 @@ vi.mock("./components/EditResourceTab", () => ({
 import { App } from "./App";
 
 beforeEach(() => {
+  // The deck layout (split/linked) persists across launches; isolate tests.
+  localStorage.clear();
   checkForUpdateMock.mockReset();
   checkForUpdateMock.mockResolvedValue(null); // up to date unless a test says otherwise
   notifyUpdateAvailableMock.mockReset();
@@ -226,5 +228,79 @@ describe("App", () => {
 
     expect(tauri.windowClose).toHaveBeenCalledTimes(1);
     delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__;
+  });
+
+  describe("split view (the deck)", () => {
+    it("Cmd+\\ splits the deck, seeds the starboard pane, and each pane sails its own cluster", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      expect(screen.getAllByTestId("overview")).toHaveLength(1);
+
+      // Split: the starboard pane appears, seeded with the current view.
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      expect(screen.getByTestId("pane-port")).toBeDefined();
+      expect(screen.getByTestId("pane-starboard")).toBeDefined();
+      const seeded = screen.getAllByTestId("overview").map((n) => n.textContent);
+      expect(seeded).toEqual(["kind-dev", "kind-dev"]);
+
+      // The starboard pane holds focus, so the hotbar opens prod there.
+      fireEvent.click(screen.getByText("open-prod"));
+      const contexts = screen.getAllByTestId("overview").map((n) => n.textContent);
+      expect(contexts).toEqual(["kind-dev", "prod"]);
+
+      // Cmd+\ again collapses back to a single pane, keeping the focused one.
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      expect(screen.queryByTestId("pane-starboard")).toBeNull();
+      expect(screen.getAllByTestId("overview").map((n) => n.textContent)).toEqual(["prod"]);
+    });
+
+    it("linked panes mirror kind navigation onto the other pane's own cluster", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      fireEvent.click(screen.getByText("open-prod")); // starboard: prod
+
+      // Enable linked cruising from either pane header.
+      fireEvent.click(screen.getAllByLabelText("Link panes")[0]);
+
+      // Navigate the focused (starboard/prod) pane to Services via the sidebar.
+      fireEvent.click(screen.getByText("nav-services"));
+
+      const browsers = screen.getAllByTestId("browser").map((n) => n.textContent ?? "");
+      expect(browsers.some((t) => t.startsWith("prod:services"))).toBe(true);
+      expect(browsers.some((t) => t.startsWith("kind-dev:services"))).toBe(true);
+    });
+
+    it("closing a pane keeps the survivor's tabs", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      fireEvent.click(screen.getByText("open-prod"));
+
+      fireEvent.click(screen.getByLabelText("Close starboard pane"));
+      expect(screen.queryByTestId("pane-starboard")).toBeNull();
+      expect(screen.getAllByTestId("overview").map((n) => n.textContent)).toEqual(["kind-dev"]);
+    });
+
+    it("an unseeded starboard pane opens on the landing screen", () => {
+      render(<App />);
+      // No tabs at all: splitting yields an empty starboard pane (landing).
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      expect(screen.getByTestId("pane-starboard")).toBeDefined();
+      // Both panes show the landing screen (two mastheads).
+      expect(screen.getAllByText(/Two clusters\./)).toHaveLength(2);
+    });
+
+    it("Cmd+Alt+arrows move focus between panes", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      fireEvent.keyDown(window, { key: "\\", metaKey: true }); // focus: starboard
+      fireEvent.click(screen.getByText("open-prod"));
+
+      // Focus port, then the hotbar targets it.
+      fireEvent.keyDown(window, { key: "ArrowLeft", metaKey: true, altKey: true });
+      fireEvent.click(screen.getByText("open-prod"));
+      expect(screen.getAllByTestId("overview").map((n) => n.textContent)).toEqual(["prod", "prod"]);
+    });
   });
 });

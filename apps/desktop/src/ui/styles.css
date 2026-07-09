@@ -3771,3 +3771,145 @@ body {
     width: 100%;
   }
 }
+
+/* ── Split View: the deck ─────────────────────────────────────────────── */
+
+/* Two panes side by side inside the main grid cell. */
+.cat-deck {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.cat-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+/* The focused pane carries the tiller: a quiet inset ring + bright header rule. */
+.cat-deck .cat-pane--focused {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cat-pane-ring) 45%, transparent);
+}
+
+.cat-pane-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--cat-color-border-faint);
+  transition: background 120ms ease;
+}
+.cat-pane-divider:hover,
+.cat-pane-divider--dragging {
+  background: var(--cat-color-accent);
+}
+
+/* Per-pane header, shown only when the deck is split. */
+.cat-pane-header {
+  display: flex;
+  align-items: center;
+  gap: var(--cat-space-sm);
+  height: 34px;
+  padding: 0 var(--cat-space-sm) 0 var(--cat-space-md);
+  background: var(--cat-color-topbar);
+  border-bottom: 1px solid var(--cat-color-border-faint);
+  font-size: 12px;
+  color: var(--cat-color-text-muted);
+  flex: none;
+}
+.cat-pane--focused .cat-pane-header {
+  box-shadow: inset 0 2px 0 var(--cat-color-brand);
+}
+.cat-pane-header__side {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cat-color-text-muted);
+  border: 1px solid var(--cat-color-border-faint);
+  border-radius: var(--cat-radius-sm);
+  padding: 1px 5px;
+}
+.cat-pane--focused .cat-pane-header__side {
+  color: var(--cat-color-brand);
+  border-color: color-mix(in srgb, var(--cat-color-brand) 55%, transparent);
+  background: var(--cat-color-brand-soft);
+}
+.cat-pane-header__ctx {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--cat-color-text);
+  font-weight: 500;
+}
+.cat-pane-header__ctx small {
+  color: var(--cat-color-text-muted);
+  font-weight: 400;
+}
+.cat-pane-header__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.cat-pane-header__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--cat-radius-sm);
+  background: transparent;
+  color: var(--cat-color-text-muted);
+  cursor: pointer;
+}
+.cat-pane-header__action:hover {
+  background: var(--cat-nav-hover);
+  color: var(--cat-color-text);
+}
+.cat-pane-header__action--on {
+  color: var(--cat-color-brand);
+  background: var(--cat-color-brand-soft);
+}
+.cat-pane-header__action svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Trailing controls (e.g. the split toggle) at the right edge of a tab strip. */
+.cat-ctabs__trailing {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--cat-space-sm);
+  flex: none;
+}
+
+/* Status bar context chips (port/starboard when split). */
+.cat-statusbar__deck {
+  display: flex;
+  align-items: center;
+  gap: var(--cat-space-sm);
+  min-width: 0;
+}
+.cat-statusbar__pane-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  border-radius: 999px;
+  border: 1px solid var(--cat-color-border-faint);
+  padding: 0 8px;
+  line-height: 16px;
+}
+.cat-statusbar__pane-chip--focused {
+  border-color: color-mix(in srgb, var(--cat-color-brand) 55%, transparent);
+  color: var(--cat-color-text);
+  background: var(--cat-color-brand-soft);
+}

@@ -23,6 +23,9 @@ import {
   setRequestTimeoutSecs,
   loadHiddenColumns,
   saveHiddenColumns,
+  DEFAULT_DECK_LAYOUT,
+  loadDeckLayout,
+  saveDeckLayout,
 } from "./settings";
 
 beforeEach(() => localStorage.clear());
@@ -131,5 +134,28 @@ describe("settings persistence", () => {
   it("falls back to stable for unknown stored channels", () => {
     localStorage.setItem("catamaran.updateChannel", "nightly");
     expect(loadUpdateChannel()).toBe("stable");
+  });
+});
+
+describe("deck layout", () => {
+  it("defaults to a single, unlinked pane", () => {
+    expect(loadDeckLayout()).toEqual(DEFAULT_DECK_LAYOUT);
+  });
+
+  it("round-trips split, ratio, and linked", () => {
+    saveDeckLayout({ split: true, ratio: 0.65, linked: true });
+    expect(loadDeckLayout()).toEqual({ split: true, ratio: 0.65, linked: true });
+  });
+
+  it("bounds the ratio and coerces invalid fields", () => {
+    saveDeckLayout({ split: true, ratio: 5, linked: true });
+    expect(loadDeckLayout().ratio).toBe(0.8);
+    localStorage.setItem("catamaran.deck", JSON.stringify({ split: "yes", ratio: "x", linked: 0 }));
+    expect(loadDeckLayout()).toEqual({ split: false, ratio: 0.5, linked: false });
+  });
+
+  it("falls back to the default on corrupt storage", () => {
+    localStorage.setItem("catamaran.deck", "{nope");
+    expect(loadDeckLayout()).toEqual(DEFAULT_DECK_LAYOUT);
   });
 });
