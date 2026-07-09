@@ -28,6 +28,7 @@ BRANCHES=(
   feat/palette-actions
   chore/release-0.1.0
   feat/ui-refresh
+  fix/exec-env-hardening
 )
 
 # 1. Create the repo (private; flip to public whenever you like) and push.
@@ -84,6 +85,10 @@ pr chore/release-0.1.0 feat/palette-actions \
 pr feat/ui-refresh chore/release-0.1.0 \
   "Regatta chrome: Catamaran's own design language" \
 "Retires the inherited Lens-style chrome in every surface: a labeled circular-avatar cluster rail with gradient active ring, aboard dots, and brand mast; a floating rounded content card over an aurora backdrop; pill deck tabs; pill nav rows with small-caps headings; tinted table hover/selection with blurred sticky headers; pill dock tabs; borderless status bar; unified avatar treatment; eased motion across the chrome."
+
+pr fix/exec-env-hardening feat/ui-refresh \
+  "fix(auth): ambient AWS creds can't override a profile-pinned exec" \
+"A GUI app can inherit stale AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN from the terminal that launched it; those outrank AWS_PROFILE in the credential chain, so kubeconfig exec plugins mint tokens as the wrong (expired) identity and EKS answers 401 even though kubectl works elsewhere. When an exec block pins its own env, Catamaran now asks kube-rs to drop the ambient credential trio for that exec (never dropping a var the block pins itself). Unit-tested; verified live against EKS with a poisoned environment."
 
 # 3. Optionally merge the stack bottom-up (GitHub retargets as bases merge).
 if $MERGE_ALL; then

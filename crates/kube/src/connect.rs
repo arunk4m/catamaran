@@ -78,8 +78,48 @@ pub fn validate_kubeconfig_yaml(yaml: &str) -> Result<usize, String> {
     Ok(config.contexts.len())
 }
 
+/// Ambient credential env vars that outrank a profile in the AWS credential
+/// chain. A GUI app can inherit a stale trio from the terminal that launched
+/// it; the exec plugin then signs tokens as the wrong (expired) identity and
+/// the cluster answers 401 even though the kubeconfig itself is correct.
+const AMBIENT_AWS_CREDENTIAL_VARS: [&str; 3] = [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+];
+
+/// When an exec block pins its own environment (e.g. `AWS_PROFILE`), the
+/// kubeconfig has named the identity to use — drop inherited ambient
+/// credentials so they can't override it. Vars the block pins itself are
+/// never dropped (kube-rs applies drop_env after the pinned env).
+pub(crate) fn harden_exec_auth(kubeconfig: &mut Kubeconfig) {
+    for named in &mut kubeconfig.auth_infos {
+        let Some(auth) = named.auth_info.as_mut() else { continue };
+        let Some(exec) = auth.exec.as_mut() else { continue };
+        let pinned: Vec<&String> = exec
+            .env
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.get("name"))
+            .collect();
+        if pinned.is_empty() {
+            continue;
+        }
+        let drop = exec.drop_env.get_or_insert_with(Vec::new);
+        for var in AMBIENT_AWS_CREDENTIAL_VARS {
+            if pinned.iter().any(|name| name.as_str() == var) {
+                continue;
+            }
+            if !drop.iter().any(|existing| existing == var) {
+                drop.push(var.to_string());
+            }
+        }
+    }
+}
+
 pub(crate) async fn build_client(paths: &[PathBuf], context: &str) -> Result<Client, String> {
-    let kubeconfig = load_kubeconfigs(paths)?;
+    let mut kubeconfig = load_kubeconfigs(paths)?;
+    harden_exec_auth(&mut kubeconfig);
     let options = KubeConfigOptions {
         context: Some(context.to_string()),
         cluster: None,
@@ -154,6 +194,94 @@ mod tests {
     use catamaran_capability::Registry;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn hardening_drops_ambient_aws_creds_when_exec_pins_env() {
+        let mut cfg = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+contexts:
+  - name: eks
+    context: { cluster: c, user: u }
+clusters:
+  - name: c
+    cluster: { server: "https://example.invalid" }
+users:
+  - name: u
+    user:
+      exec:
+        apiVersion: client.authentication.k8s.io/v1beta1
+        command: aws
+        args: ["eks", "get-token", "--cluster-name", "demo"]
+        env:
+          - name: AWS_PROFILE
+            value: tusk-dev
+"#,
+        )
+        .unwrap();
+        harden_exec_auth(&mut cfg);
+        let exec = cfg.auth_infos[0].auth_info.as_ref().unwrap().exec.as_ref().unwrap();
+        let dropped = exec.drop_env.as_ref().unwrap();
+        assert!(dropped.iter().any(|v| v == "AWS_ACCESS_KEY_ID"));
+        assert!(dropped.iter().any(|v| v == "AWS_SECRET_ACCESS_KEY"));
+        assert!(dropped.iter().any(|v| v == "AWS_SESSION_TOKEN"));
+    }
+
+    #[test]
+    fn hardening_leaves_exec_without_pinned_env_untouched() {
+        let mut cfg = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+contexts:
+  - name: eks
+    context: { cluster: c, user: u }
+clusters:
+  - name: c
+    cluster: { server: "https://example.invalid" }
+users:
+  - name: u
+    user:
+      exec:
+        apiVersion: client.authentication.k8s.io/v1beta1
+        command: aws
+        args: ["eks", "get-token", "--cluster-name", "demo"]
+"#,
+        )
+        .unwrap();
+        harden_exec_auth(&mut cfg);
+        let exec = cfg.auth_infos[0].auth_info.as_ref().unwrap().exec.as_ref().unwrap();
+        assert!(exec.drop_env.is_none());
+    }
+
+    #[test]
+    fn hardening_never_drops_a_var_the_exec_block_pins_itself() {
+        let mut cfg = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+contexts:
+  - name: eks
+    context: { cluster: c, user: u }
+clusters:
+  - name: c
+    cluster: { server: "https://example.invalid" }
+users:
+  - name: u
+    user:
+      exec:
+        apiVersion: client.authentication.k8s.io/v1beta1
+        command: signer
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            value: pinned-key
+"#,
+        )
+        .unwrap();
+        harden_exec_auth(&mut cfg);
+        let exec = cfg.auth_infos[0].auth_info.as_ref().unwrap().exec.as_ref().unwrap();
+        let dropped = exec.drop_env.as_ref().unwrap();
+        assert!(!dropped.iter().any(|v| v == "AWS_ACCESS_KEY_ID"));
+        assert!(dropped.iter().any(|v| v == "AWS_SESSION_TOKEN"));
+    }
 
     #[test]
     fn timeout_setter_clamps_to_supported_range() {
