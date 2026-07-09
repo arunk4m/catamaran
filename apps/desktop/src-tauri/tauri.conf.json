@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "catamaran",
+  "productName": "Catamaran",
   "mainBinaryName": "catamaran",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "identifier": "app.catamaran.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "catamaran",
+        "title": "Catamaran",
         "width": 1440,
         "height": 900,
         "minWidth": 960,

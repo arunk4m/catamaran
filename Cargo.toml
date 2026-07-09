@@ -4,5 +4,5 @@ members = ["crates/capability", "crates/mcp", "crates/kube", "apps/desktop/src-t
 
 [workspace.package]
 edition = "2021"
-version = "0.0.0"
+version = "0.1.0"
 license = "MIT"
