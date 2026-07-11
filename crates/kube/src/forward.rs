@@ -51,6 +51,65 @@ pub async fn serve_pod_forward(
     }
 }
 
+/// Accept loop for a Service forward that survives pod rolls. Like
+/// [`serve_pod_forward`], but the backing pod is re-resolved from the Service's
+/// selector when a forward fails — so a deploy/HPA restart of the target
+/// (e.g. Kiali rolling on a config change) is transparent instead of leaving
+/// the tunnel pointed at a dead pod. The resolved pod is cached and only
+/// re-resolved on failure, so the happy path costs nothing extra.
+pub async fn serve_service_forward(
+    listener: TcpListener,
+    cache: Arc<ClientCache>,
+    context: String,
+    namespace: String,
+    service: String,
+    service_port: Option<i32>,
+) -> Result<(), String> {
+    let (initial_pod, target_port) =
+        resolve_service_target(cache.clone(), &context, &namespace, &service, service_port).await?;
+    let current = Arc::new(tokio::sync::Mutex::new(initial_pod));
+
+    loop {
+        let (mut local, _peer) = listener.accept().await.map_err(|e| e.to_string())?;
+        let cache = cache.clone();
+        let current = current.clone();
+        let context = context.clone();
+        let namespace = namespace.clone();
+        let service = service.clone();
+        tokio::spawn(async move {
+            let Ok(client) = cache.get(&context).await else { return };
+            let api: Api<Pod> = Api::namespaced(client, &namespace);
+            // Try the cached pod; on failure re-resolve the Service's current
+            // ready pod once and retry — covers the pod having rolled.
+            for attempt in 0..2u8 {
+                let pod = current.lock().await.clone();
+                match api.portforward(&pod, &[target_port]).await {
+                    Ok(mut pf) => {
+                        if let Some(mut upstream) = pf.take_stream(target_port) {
+                            let _ = copy_bidirectional(&mut local, &mut upstream).await;
+                        }
+                        return;
+                    }
+                    Err(_) if attempt == 0 => {
+                        if let Ok((fresh, _)) = resolve_service_target(
+                            cache.clone(),
+                            &context,
+                            &namespace,
+                            &service,
+                            service_port,
+                        )
+                        .await
+                        {
+                            *current.lock().await = fresh;
+                        }
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+    }
+}
+
 /// Resolve a Service to a concrete `(pod, container_port)` to forward to: pick
 /// the matching service port, then the first ready pod behind its selector, and
 /// map the service's target port onto that pod.

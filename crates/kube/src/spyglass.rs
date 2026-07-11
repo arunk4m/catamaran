@@ -469,7 +469,9 @@ impl ForwardRegistry {
             }
         }
 
-        let (pod, target_port) = forward::resolve_service_target(
+        // Validate the target resolves before binding a port (so a bad
+        // service/namespace still surfaces an error to the caller).
+        forward::resolve_service_target(
             self.cache.clone(),
             context,
             namespace,
@@ -490,9 +492,12 @@ impl ForwardRegistry {
         let local_port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
         let cache = self.cache.clone();
-        let (ctx, ns) = (context.to_string(), namespace.to_string());
+        let (ctx, ns, svc) = (context.to_string(), namespace.to_string(), service.to_string());
+        // Re-resolves the backing pod on failure, so the tunnel survives a
+        // pod roll of the target service (e.g. Kiali restarting on a change).
         let task = tokio::spawn(async move {
-            let _ = forward::serve_pod_forward(listener, cache, ctx, ns, pod, target_port).await;
+            let _ = forward::serve_service_forward(listener, cache, ctx, ns, svc, Some(i32::from(port)))
+                .await;
         });
 
         if let Some(old) = forwards.insert(key, ForwardEntry { local_port, task }) {
