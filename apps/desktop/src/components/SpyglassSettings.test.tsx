@@ -156,3 +156,64 @@ describe("SpyglassSettings", () => {
     expect(onConfigChange).not.toHaveBeenCalled();
   });
 });
+
+describe("SpyglassSettings custom tools", () => {
+  it("adds, edits, picks an icon for, and removes a custom tool", () => {
+    const onCustomToolsChange = vi.fn();
+    const custom = [
+      {
+        id: "custom-lens",
+        label: "Tusk Lens",
+        icon: "scan-eye" as const,
+        namespace: "default",
+        service: "tusk-lens-frontend",
+        port: 3000,
+      },
+    ];
+    const { rerender } = render(
+      <SpyglassSettings
+        config={DEFAULT_OBSERVABILITY}
+        onConfigChange={() => {}}
+        customTools={custom}
+        onCustomToolsChange={onCustomToolsChange}
+        activeContext="tusk-dev"
+      />,
+    );
+
+    // Existing custom tool's fields render and edit.
+    expect((screen.getByLabelText("Tusk Lens namespace") as HTMLInputElement).value).toBe("default");
+    fireEvent.change(screen.getByLabelText("Tusk Lens service"), { target: { value: "lens-ui" } });
+    expect(onCustomToolsChange).toHaveBeenCalledWith([{ ...custom[0], service: "lens-ui" }]);
+
+    // Icon picker switches the icon.
+    onCustomToolsChange.mockClear();
+    const iconGroup = screen.getByRole("group", { name: "Tusk Lens icon" });
+    fireEvent.click(iconGroup.querySelector('[aria-label="workflow"]')!);
+    expect(onCustomToolsChange).toHaveBeenCalledWith([{ ...custom[0], icon: "workflow" }]);
+
+    // Add appends a blank tool.
+    onCustomToolsChange.mockClear();
+    fireEvent.click(screen.getByText("Add tool"));
+    expect(onCustomToolsChange).toHaveBeenCalledTimes(1);
+    const added = onCustomToolsChange.mock.calls[0][0];
+    expect(added).toHaveLength(2);
+    expect(added[1].id).toMatch(/^custom-/);
+
+    // Remove drops it.
+    onCustomToolsChange.mockClear();
+    fireEvent.click(screen.getByLabelText("Remove Tusk Lens"));
+    expect(onCustomToolsChange).toHaveBeenCalledWith([]);
+
+    // Empty state when there are none.
+    rerender(
+      <SpyglassSettings
+        config={DEFAULT_OBSERVABILITY}
+        onConfigChange={() => {}}
+        customTools={[]}
+        onCustomToolsChange={onCustomToolsChange}
+        activeContext="tusk-dev"
+      />,
+    );
+    expect(screen.getByText("No custom tools yet.")).toBeDefined();
+  });
+});

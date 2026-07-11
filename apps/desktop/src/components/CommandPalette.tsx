@@ -23,8 +23,8 @@ import { listResource } from "../lib/manifest";
 import { listCrds, type CrdRef } from "../lib/crds";
 import { getRecents, pushRecent, recentId, type RecentItem } from "../lib/recents";
 import { rankItems } from "../lib/paletteRank";
-import { iconForResourceKind } from "../ui/NavIcon";
-import { SPYGLASS_CATALOG, type SpyglassTool } from "../lib/settings";
+import { iconForResourceKind, spyglassIcon } from "../ui/NavIcon";
+import { SPYGLASS_CATALOG, type SpyglassTool, type SpyglassToolMeta } from "../lib/settings";
 
 /** Workspace-level commands the palette can run. */
 export interface PaletteActions {
@@ -39,6 +39,8 @@ export interface PaletteActions {
   onNewResource: () => void;
   /** Open an observability tool against the focused context. */
   onOpenSpyglass?: (tool: SpyglassTool) => void;
+  /** Tools offered in the palette (built-in + user-added). */
+  spyglassTools?: SpyglassToolMeta[];
 }
 
 interface ActionItem {
@@ -103,12 +105,12 @@ function buildActions(actions: PaletteActions): ActionItem[] {
   }
   const openSpyglass = actions.onOpenSpyglass;
   if (openSpyglass) {
-    for (const tool of SPYGLASS_CATALOG) {
+    for (const tool of actions.spyglassTools ?? SPYGLASS_CATALOG) {
       items.push({
         id: `act:${tool.id}`,
         label: `Open ${tool.label}`,
         keywords: `${tool.label} ${tool.blurb} observability spyglass tool`.toLowerCase(),
-        icon: iconForResourceKind(tool.id),
+        icon: spyglassIcon(tool.icon),
         run: () => openSpyglass(tool.id),
       });
     }

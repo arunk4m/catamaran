@@ -3,8 +3,8 @@ import { Bookmark, ExternalLink, KeyRound, RotateCcw, RefreshCw, Settings2 } fro
 import { Button, LoadingState } from "../ui";
 import { notify } from "../lib/notify";
 import { openExternalUrl, ssoProfiles, ssoLogin, profileForContext } from "../lib/aws";
-import { prepareEmbed, isMeshTool, SPYGLASS_LABELS, type SpyglassEmbed } from "../lib/spyglass";
-import { validSavedPath, type SpyglassSource, type SpyglassTool } from "../lib/settings";
+import { prepareEmbed, type SpyglassEmbed } from "../lib/spyglass";
+import { validSavedPath, type SpyglassSource, type SpyglassToolMeta } from "../lib/settings";
 import { invokeCapability, type Invoker } from "../transport/transport";
 
 type Phase =
@@ -40,7 +40,7 @@ export function looksLikeAuthError(message: string): boolean {
  * what makes "Save view" possible for a cross-origin page.
  */
 export function SpyglassView({
-  tool,
+  meta,
   context,
   source,
   active = true,
@@ -48,7 +48,7 @@ export function SpyglassView({
   onOpenSettings,
   invoke = invokeCapability,
 }: {
-  tool: SpyglassTool;
+  meta: SpyglassToolMeta;
   context: string | null;
   source: SpyglassSource;
   /**
@@ -62,7 +62,7 @@ export function SpyglassView({
   onOpenSettings?: () => void;
   invoke?: Invoker;
 }) {
-  const label = SPYGLASS_LABELS[tool];
+  const label = meta.label;
   const [state, setState] = useState<Phase>({ phase: "loading" });
   // Last in-tool location the embedded page reported (path + query + hash).
   const currentPath = useRef<string | null>(null);
@@ -83,7 +83,7 @@ export function SpyglassView({
 
   const prepare = useCallback(async () => {
     setState({ phase: "loading" });
-    const { prep, error } = await prepareEmbed(tool, context, sourceRef.current, invoke);
+    const { prep, error } = await prepareEmbed(meta, context, sourceRef.current, invoke);
     if (error || !prep) {
       const message = error ?? "The spyglass could not be prepared.";
       setState({ phase: "error", message, auth: looksLikeAuthError(message) });
@@ -98,7 +98,7 @@ export function SpyglassView({
     currentPath.current = src;
     setState({ phase: "ready", embed: prep, src, nonce: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, context, invoke, sourceKey]);
+  }, [meta, context, invoke, sourceKey]);
 
   useEffect(() => {
     currentPath.current = null; // a new target starts from its saved/default view
@@ -175,7 +175,7 @@ export function SpyglassView({
         <span className="cat-spyglass-view__title">
           <strong>{label}</strong>
           {context && <small>{context}</small>}
-          {state.phase === "ready" && isMeshTool(tool) && state.embed.meshNamespaces.length > 0 && (
+          {state.phase === "ready" && meta.mesh && state.embed.meshNamespaces.length > 0 && (
             <small className="cat-spyglass-view__mesh">
               mesh: {state.embed.meshNamespaces.join(", ")}
             </small>

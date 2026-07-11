@@ -10,9 +10,9 @@
 //! (Grafana Live). It binds to 127.0.0.1 only and relays to a tunnel that
 //! carries the user's own credentials — it widens nothing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use bytes::Bytes;
 use catamaran_capability::{Annotations, Capability, CapabilityError};
@@ -27,6 +27,18 @@ use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+
+/// Server-side cookie jar for one relay (name → value).
+///
+/// The embedded tool's iframe is *cross-site* relative to the app's own
+/// origin, so WKWebView's tracking prevention blocks the tool's session
+/// cookies as third-party — login "succeeds" upstream but the session cookie
+/// never comes back, so the tool bounces to its login page (Grafana) or fails
+/// CSRF validation (Airflow: "CSRF session token is missing"). The relay holds
+/// the session itself: it captures upstream `Set-Cookie`s into this jar and
+/// replays them on every upstream request, so the browser never needs to store
+/// a third-party cookie for auth to work.
+type CookieJar = Arc<StdMutex<BTreeMap<String, String>>>;
 
 use crate::forward;
 use crate::spyglass::ForwardRegistry;
@@ -176,11 +188,88 @@ fn bad_gateway(reason: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
     resp
 }
 
+/// Parse one `Set-Cookie` value into `(name, value, is_deletion)`. A deletion
+/// is a cookie expired immediately (`Max-Age<=0` or an epoch-1970 `Expires`),
+/// which the tool uses to clear a session (e.g. on logout).
+pub(crate) fn parse_set_cookie(value: &str) -> Option<(String, String, bool)> {
+    let mut parts = value.split(';');
+    let nv = parts.next()?.trim();
+    let (name, val) = nv.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut deletion = false;
+    for attr in parts {
+        let attr = attr.trim().to_ascii_lowercase();
+        if let Some(age) = attr.strip_prefix("max-age=") {
+            if age.trim().parse::<i64>().map(|n| n <= 0).unwrap_or(false) {
+                deletion = true;
+            }
+        } else if attr.starts_with("expires=") && attr.contains("1970") {
+            deletion = true;
+        }
+    }
+    Some((name.to_string(), val.trim().to_string(), deletion))
+}
+
+/// Fold a response's `Set-Cookie` headers into the jar (insert or delete).
+pub(crate) fn update_jar(jar: &CookieJar, headers: &HeaderMap) {
+    let updates: Vec<(String, String, bool)> = headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(parse_set_cookie)
+        .collect();
+    if updates.is_empty() {
+        return;
+    }
+    let mut jar = jar.lock().unwrap();
+    for (name, value, deletion) in updates {
+        if deletion {
+            jar.remove(&name);
+        } else {
+            jar.insert(name, value);
+        }
+    }
+}
+
+/// Build the `Cookie` header to send upstream: the browser's cookies overlaid
+/// with the jar (the jar wins, since it holds the authoritative session that
+/// the browser may not have been allowed to store).
+pub(crate) fn merge_cookie_header(browser: Option<&str>, jar: &CookieJar) -> Option<String> {
+    let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(header) = browser {
+        for pair in header.split(';') {
+            if let Some((k, v)) = pair.trim().split_once('=') {
+                if !k.trim().is_empty() {
+                    merged.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+        }
+    }
+    for (k, v) in jar.lock().unwrap().iter() {
+        merged.insert(k.clone(), v.clone());
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    Some(
+        merged
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+
 /// Relay one request to `127.0.0.1:<upstream>`: strip embed blockers, inject
-/// the reporter into HTML, splice upgraded (WebSocket) connections through.
+/// the reporter into HTML, replay session cookies from the jar, and splice
+/// upgraded (WebSocket) connections through.
 async fn relay(
     req: Request<Incoming>,
     upstream: Arc<AtomicU16>,
+    jar: CookieJar,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let port = upstream.load(Ordering::SeqCst);
     let stream = match TcpStream::connect(("127.0.0.1", port)).await {
@@ -205,15 +294,32 @@ async fn relay(
         .unwrap_or_else(|_| Uri::from_static("/"));
     let is_upgrade = req.headers().contains_key(hyper::header::UPGRADE);
 
+    // Replay the jarred session on top of whatever cookies the browser sent.
+    let browser_cookie = req
+        .headers()
+        .get(hyper::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let cookie_header = merge_cookie_header(browser_cookie.as_deref(), &jar);
+
     let mut builder = Request::builder().method(req.method()).uri(target);
     for (name, value) in req.headers() {
-        // Identity encoding keeps HTML injectable; the proxy re-addresses Host.
-        if name == hyper::header::ACCEPT_ENCODING || name == hyper::header::HOST {
+        // Identity encoding keeps HTML injectable; the proxy re-addresses Host;
+        // Cookie is replaced with the jar-merged value below.
+        if name == hyper::header::ACCEPT_ENCODING
+            || name == hyper::header::HOST
+            || name == hyper::header::COOKIE
+        {
             continue;
         }
         builder = builder.header(name, value);
     }
     builder = builder.header(hyper::header::HOST, format!("127.0.0.1:{port}"));
+    if let Some(cookie) = &cookie_header {
+        if let Ok(value) = HeaderValue::from_str(cookie) {
+            builder = builder.header(hyper::header::COOKIE, value);
+        }
+    }
 
     if is_upgrade {
         // Keep the inbound request intact for its own upgrade handshake.
@@ -222,6 +328,7 @@ async fn relay(
             Err(e) => return Ok(bad_gateway(&format!("bad upgrade request: {e}"))),
         };
         let mut resp = sender.send_request(out).await?;
+        update_jar(&jar, resp.headers());
         if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
             let upstream_upgrade = hyper::upgrade::on(&mut resp);
             let client_upgrade = hyper::upgrade::on(req);
@@ -246,6 +353,7 @@ async fn relay(
         Err(e) => return Ok(bad_gateway(&format!("bad request: {e}"))),
     };
     let resp = sender.send_request(out).await?;
+    update_jar(&jar, resp.headers());
     let (mut parts, body) = resp.into_parts();
     strip_embed_blockers(&mut parts.headers);
 
@@ -275,16 +383,24 @@ async fn relay(
     Ok(Response::from_parts(parts, body.boxed()))
 }
 
-/// Accept loop: serve the relay on every inbound webview connection.
-pub(crate) async fn serve_embed_proxy(listener: TcpListener, upstream: Arc<AtomicU16>) {
+/// Accept loop: serve the relay on every inbound webview connection. All
+/// connections share one cookie jar, so the tool's session (captured on any
+/// request) is replayed on every other.
+pub(crate) async fn serve_embed_proxy(
+    listener: TcpListener,
+    upstream: Arc<AtomicU16>,
+    jar: CookieJar,
+) {
     loop {
         let Ok((stream, _peer)) = listener.accept().await else {
             return;
         };
         let upstream = upstream.clone();
+        let jar = jar.clone();
         tokio::spawn(async move {
-            let service =
-                hyper::service::service_fn(move |req| relay(req, upstream.clone()));
+            let service = hyper::service::service_fn(move |req| {
+                relay(req, upstream.clone(), jar.clone())
+            });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
                 .with_upgrades()
@@ -347,7 +463,8 @@ impl EmbedRegistry {
         let listener = forward::bind_local(0).await?;
         let local_port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let upstream = Arc::new(AtomicU16::new(tunnel_port));
-        let task = tokio::spawn(serve_embed_proxy(listener, upstream.clone()));
+        let jar: CookieJar = Arc::new(StdMutex::new(BTreeMap::new()));
+        let task = tokio::spawn(serve_embed_proxy(listener, upstream.clone(), jar));
         if let Some(old) = proxies.insert(
             key,
             ProxyEntry {
@@ -511,6 +628,59 @@ mod header_tests {
     }
 
     #[test]
+    fn parse_set_cookie_reads_name_value_and_deletion() {
+        assert_eq!(
+            parse_set_cookie("grafana_session=abc; Path=/; HttpOnly"),
+            Some(("grafana_session".into(), "abc".into(), false))
+        );
+        // Max-Age=0 and epoch expiry are deletions (logout).
+        assert_eq!(
+            parse_set_cookie("session=; Max-Age=0; Path=/"),
+            Some(("session".into(), "".into(), true))
+        );
+        assert_eq!(
+            parse_set_cookie("s=x; Expires=Thu, 01 Jan 1970 00:00:00 GMT"),
+            Some(("s".into(), "x".into(), true))
+        );
+        assert_eq!(parse_set_cookie("nonsense"), None);
+    }
+
+    #[test]
+    fn jar_captures_inserts_and_deletes() {
+        let jar: CookieJar = Arc::new(StdMutex::new(BTreeMap::new()));
+        let mut h = HeaderMap::new();
+        h.append("set-cookie", HeaderValue::from_static("session=abc; Secure; SameSite=None"));
+        h.append("set-cookie", HeaderValue::from_static("csrf=tok; Path=/"));
+        update_jar(&jar, &h);
+        assert_eq!(jar.lock().unwrap().get("session").map(String::as_str), Some("abc"));
+        assert_eq!(jar.lock().unwrap().get("csrf").map(String::as_str), Some("tok"));
+
+        // A logout deletion clears it.
+        let mut del = HeaderMap::new();
+        del.append("set-cookie", HeaderValue::from_static("session=; Max-Age=0"));
+        update_jar(&jar, &del);
+        assert!(jar.lock().unwrap().get("session").is_none());
+    }
+
+    #[test]
+    fn merge_cookie_header_overlays_jar_on_browser() {
+        let jar: CookieJar = Arc::new(StdMutex::new(BTreeMap::new()));
+        jar.lock().unwrap().insert("session".into(), "server-side".into());
+        // The browser sent nothing (third-party cookie blocked) — jar still applies.
+        assert_eq!(
+            merge_cookie_header(None, &jar),
+            Some("session=server-side".to_string())
+        );
+        // Browser's own cookies are preserved; the jar wins on conflict.
+        jar.lock().unwrap().insert("session".into(), "fresh".into());
+        let merged = merge_cookie_header(Some("pref=dark; session=stale"), &jar).unwrap();
+        assert!(merged.contains("pref=dark"));
+        assert!(merged.contains("session=fresh"));
+        assert!(!merged.contains("session=stale"));
+        assert_eq!(merge_cookie_header(None, &Arc::new(StdMutex::new(BTreeMap::new()))), None);
+    }
+
+    #[test]
     fn sanitize_cookies_rewrites_all_set_cookie_headers() {
         let mut headers = HeaderMap::new();
         headers.append("set-cookie", HeaderValue::from_static("a=1; Secure; SameSite=None"));
@@ -558,7 +728,8 @@ mod proxy_tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let upstream = Arc::new(AtomicU16::new(upstream_port));
-        tokio::spawn(serve_embed_proxy(listener, upstream));
+        let jar: CookieJar = Arc::new(StdMutex::new(BTreeMap::new()));
+        tokio::spawn(serve_embed_proxy(listener, upstream, jar));
         port
     }
 
@@ -572,6 +743,50 @@ mod proxy_tests {
         let mut out = Vec::new();
         let _ = sock.read_to_end(&mut out).await;
         String::from_utf8_lossy(&out).to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_cookie_is_replayed_across_requests_without_the_browser_storing_it() {
+        // Upstream: request #1 sets a Secure session cookie (which the webview
+        // would refuse to store as a third-party cookie); request #2 echoes
+        // back the Cookie header it received. The jar must carry the session
+        // to request #2 even though the "browser" sends no Cookie header.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            for i in 0..2u8 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = if i == 0 {
+                    "HTTP/1.1 200 OK\r\nSet-Cookie: session=secret; Path=/; Secure; SameSite=None\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nlogin".to_string()
+                } else {
+                    // Echo the Cookie header the proxy forwarded upstream.
+                    let cookie = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("cookie:"))
+                        .unwrap_or("cookie: <none>")
+                        .to_string();
+                    let payload = cookie;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    )
+                };
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+        let proxy = start_proxy(upstream_port).await;
+
+        // Request #1: login — the proxy captures the session into its jar.
+        let first = raw_get(proxy, "/login").await;
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+
+        // Request #2: NO Cookie header from the browser — the jar must supply it.
+        let second = raw_get(proxy, "/api/me").await;
+        assert!(second.contains("session=secret"), "upstream saw: {second}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

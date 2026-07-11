@@ -4512,3 +4512,72 @@ button,
   border: 0;
   background: var(--cat-color-bg);
 }
+
+/* ── Spyglass: custom tools + icon picker ─────────────────────────────── */
+.cat-spyglass__custom {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--cat-color-border-faint);
+}
+.cat-spyglass__custom-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cat-spyglass__custom-head span {
+  display: flex;
+  flex-direction: column;
+}
+.cat-spyglass__custom-head strong {
+  color: var(--cat-color-heading);
+  font-size: 13px;
+}
+.cat-spyglass__custom-head small {
+  color: var(--cat-color-text-muted);
+  font-size: 12px;
+}
+.cat-spyglass__tool--custom {
+  gap: 12px;
+}
+.cat-spyglass__custom-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.cat-spyglass__custom-name {
+  flex: 1;
+}
+.cat-spyglass__icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cat-spyglass__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--cat-radius-md, 10px);
+  border: 1px solid var(--cat-color-border-faint);
+  background: transparent;
+  color: var(--cat-color-text-muted);
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.cat-spyglass__icon:hover {
+  color: var(--cat-color-text);
+  border-color: color-mix(in srgb, var(--cat-color-accent) 45%, transparent);
+}
+.cat-spyglass__icon svg {
+  width: 16px;
+  height: 16px;
+}
+.cat-spyglass__icon--active {
+  color: var(--cat-color-accent);
+  border-color: var(--cat-color-accent);
+  background: color-mix(in srgb, var(--cat-color-accent) 12%, transparent);
+}

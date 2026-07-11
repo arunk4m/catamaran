@@ -53,16 +53,16 @@ vi.mock("./components/ClusterHotbar", () => ({
 }));
 vi.mock("./components/SpyglassView", () => ({
   SpyglassView: ({
-    tool,
+    meta,
     context,
     active,
   }: {
-    tool: string;
+    meta: { id: string };
     context: string | null;
     active?: boolean;
   }) => (
     <div data-testid="spyglass">
-      {tool}:{context}:{active ? "active" : "hidden"}
+      {meta.id}:{context}:{active ? "active" : "hidden"}
     </div>
   ),
 }));

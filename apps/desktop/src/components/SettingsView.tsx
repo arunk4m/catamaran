@@ -43,6 +43,7 @@ import { ssoProfiles, ssoLogin, openExternalUrl, type SsoProfileInfo } from "../
 import { notify } from "../lib/notify";
 import {
   DEFAULT_OBSERVABILITY,
+  type CustomSpyglassTool,
   DEFAULT_WORKSPACE_LAYOUT,
   REQUEST_TIMEOUT,
   contextDisplayName,
@@ -130,6 +131,8 @@ export function SettingsView({
   onAwsPortalUrlChange = () => {},
   observability = DEFAULT_OBSERVABILITY,
   onObservabilityChange = () => {},
+  customTools = [],
+  onCustomToolsChange = () => {},
   activeContext = null,
   initialSection = "appearance",
 }: {
@@ -149,9 +152,12 @@ export function SettingsView({
   /** Configured AWS access-portal URL ("" = not configured). */
   awsPortalUrl?: string;
   onAwsPortalUrlChange?: (url: string) => void;
-  /** Where Kiali and Grafana live (per-tool source). */
+  /** Where the built-in tools live (per-tool source). */
   observability?: ObservabilityConfig;
   onObservabilityChange?: (config: ObservabilityConfig) => void;
+  /** User-added observability tools. */
+  customTools?: CustomSpyglassTool[];
+  onCustomToolsChange?: (tools: CustomSpyglassTool[]) => void;
   /** The focused pane's cluster, used by observability detection. */
   activeContext?: string | null;
   /** Section to open on mount (e.g. deep-linked from the update toast). */
@@ -889,6 +895,8 @@ export function SettingsView({
               <SpyglassSettings
                 config={observability}
                 onConfigChange={onObservabilityChange}
+                customTools={customTools}
+                onCustomToolsChange={onCustomToolsChange}
                 activeContext={activeContext}
               />
             </SectionPanel>

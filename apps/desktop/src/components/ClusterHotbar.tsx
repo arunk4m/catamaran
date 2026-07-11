@@ -6,7 +6,7 @@ import {
   type Theme,
 } from "../ui";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { iconForResourceKind } from "../ui/NavIcon";
+import { spyglassIcon } from "../ui/NavIcon";
 import { ContextAvatar } from "./ContextAvatar";
 import {
   contextDisplayName,
@@ -14,6 +14,7 @@ import {
   SPYGLASS_CATALOG,
   type ContextProfiles,
   type SpyglassTool,
+  type SpyglassToolMeta,
 } from "../lib/settings";
 
 const EMPTY_LIST: string[] = [];
@@ -24,6 +25,8 @@ const EMPTY_LIST: string[] = [];
  * carries a gradient ring; every context that's aboard (open in any pane)
  * shows a green dot. Theme and settings live at the foot of the mast.
  */
+const DEFAULT_SPYGLASS_TOOLS: SpyglassToolMeta[] = SPYGLASS_CATALOG;
+
 export function ClusterHotbar({
   openContext,
   onOpenContext,
@@ -31,6 +34,7 @@ export function ClusterHotbar({
   onToggleTheme,
   onOpenSettings,
   onOpenSpyglass,
+  spyglassTools = DEFAULT_SPYGLASS_TOOLS,
   contextProfiles = {},
   kubeconfigFiles = EMPTY_LIST,
   contextOrder = EMPTY_LIST,
@@ -41,8 +45,10 @@ export function ClusterHotbar({
   theme: Theme;
   onToggleTheme: () => void;
   onOpenSettings: () => void;
-  /** Open an observability tool (Kiali / Grafana) in its dedicated window. */
+  /** Open an observability tool as a workspace tab against the focused context. */
   onOpenSpyglass?: (tool: SpyglassTool) => void;
+  /** Tools listed in the observability menu (built-in + user-added). */
+  spyglassTools?: SpyglassToolMeta[];
   contextProfiles?: ContextProfiles;
   kubeconfigFiles?: string[];
   contextOrder?: string[];
@@ -108,8 +114,8 @@ export function ClusterHotbar({
                   Observability
                 </div>
                 <ul className="py-1">
-                  {SPYGLASS_CATALOG.map((tool) => {
-                    const Icon = iconForResourceKind(tool.id);
+                  {spyglassTools.map((tool) => {
+                    const Icon = spyglassIcon(tool.icon);
                     return (
                       <li key={tool.id}>
                         <button

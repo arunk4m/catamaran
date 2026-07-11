@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { SPYGLASS_CATALOG } from "./settings";
 import {
   discoverTools,
   embedStart,
@@ -28,6 +29,9 @@ const GRAFANA_ROW: DiscoveredTool = {
   port: 80,
   ingressUrl: null,
 };
+
+/** Resolve a built-in tool's meta for prepareEmbed. */
+const meta = (id: string) => SPYGLASS_CATALOG.find((t) => t.id === id)!;
 
 /** A fake invoker for the whole embed pipeline, recording calls. */
 function pipelineInvoke(overrides: Record<string, (args: never) => unknown> = {}) {
@@ -132,21 +136,21 @@ describe("pickDiscovered / kialiDefaultPath", () => {
 describe("prepareEmbed", () => {
   it("returns url-mode sources as external without touching the backend", async () => {
     const invoke = vi.fn();
-    const out = await prepareEmbed("grafana", "tusk-dev", { mode: "url", url: "https://grafana.example" }, invoke);
+    const out = await prepareEmbed(meta("grafana"), "tusk-dev", { mode: "url", url: "https://grafana.example" }, invoke);
     expect(out.prep).toEqual({ kind: "external", url: "https://grafana.example" });
     expect(invoke).not.toHaveBeenCalled();
   });
 
   it("requires a context for auto and service modes", async () => {
     const invoke = vi.fn();
-    const out = await prepareEmbed("kiali", null, { mode: "auto" }, invoke);
+    const out = await prepareEmbed(meta("kiali"), null, { mode: "auto" }, invoke);
     expect(out.error).toContain("Open a cluster first");
     expect(invoke).not.toHaveBeenCalled();
   });
 
   it("auto mode discovers, relays, detects the /kiali prefix and opens the animated graph", async () => {
     const invoke = pipelineInvoke();
-    const out = await prepareEmbed("kiali", "tusk-dev", { mode: "auto" }, invoke as never);
+    const out = await prepareEmbed(meta("kiali"), "tusk-dev", { mode: "auto" }, invoke as never);
     expect(out.error).toBeUndefined();
     const prep = out.prep;
     if (prep?.kind !== "embed") throw new Error(`expected embed, got ${JSON.stringify(prep)}`);
@@ -169,7 +173,7 @@ describe("prepareEmbed", () => {
           ? { ok: true, status: 404, frameBlocked: false, authRedirect: false }
           : { ok: true, status: 200, frameBlocked: false, authRedirect: false },
     });
-    const out = await prepareEmbed("kiali", "tusk-dev", { mode: "auto" }, invoke as never);
+    const out = await prepareEmbed(meta("kiali"), "tusk-dev", { mode: "auto" }, invoke as never);
     const prep = out.prep;
     if (prep?.kind !== "embed") throw new Error("expected embed");
     expect(prep.initialPath.startsWith("/console/graph/namespaces/?")).toBe(true);
@@ -178,7 +182,7 @@ describe("prepareEmbed", () => {
   it("a saved view wins over the default path", async () => {
     const invoke = pipelineInvoke();
     const saved = "/kiali/console/graph/namespaces/?namespaces=aiapp&animation=false";
-    const out = await prepareEmbed("kiali", "tusk-dev", { mode: "auto", savedPath: saved }, invoke as never);
+    const out = await prepareEmbed(meta("kiali"), "tusk-dev", { mode: "auto", savedPath: saved }, invoke as never);
     const prep = out.prep;
     if (prep?.kind !== "embed") throw new Error("expected embed");
     expect(prep.initialPath).toBe(saved);
@@ -188,7 +192,7 @@ describe("prepareEmbed", () => {
 
   it("grafana opens at root and never probes for a prefix", async () => {
     const invoke = pipelineInvoke();
-    const out = await prepareEmbed("grafana", "tusk-dev", { mode: "auto" }, invoke as never);
+    const out = await prepareEmbed(meta("grafana"), "tusk-dev", { mode: "auto" }, invoke as never);
     const prep = out.prep;
     if (prep?.kind !== "embed") throw new Error("expected embed");
     expect(prep.initialPath).toBe("/");
@@ -199,7 +203,7 @@ describe("prepareEmbed", () => {
   it("pinned grafana skips discovery entirely; pinned kiali still asks for mesh namespaces", async () => {
     const grafanaInvoke = pipelineInvoke();
     await prepareEmbed(
-      "grafana",
+      meta("grafana"),
       "tusk-dev",
       { mode: "service", namespace: "infra", service: "grafana", port: 80 },
       grafanaInvoke as never,
@@ -209,7 +213,7 @@ describe("prepareEmbed", () => {
     resetSpyglassCache();
     const kialiInvoke = pipelineInvoke();
     const out = await prepareEmbed(
-      "kiali",
+      meta("kiali"),
       "tusk-dev",
       { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
       kialiInvoke as never,
@@ -221,8 +225,8 @@ describe("prepareEmbed", () => {
 
   it("caches discovery per context so re-opens skip the scan", async () => {
     const invoke = pipelineInvoke();
-    await prepareEmbed("kiali", "tusk-dev", { mode: "auto" }, invoke as never);
-    await prepareEmbed("grafana", "tusk-dev", { mode: "auto" }, invoke as never);
+    await prepareEmbed(meta("kiali"), "tusk-dev", { mode: "auto" }, invoke as never);
+    await prepareEmbed(meta("grafana"), "tusk-dev", { mode: "auto" }, invoke as never);
     const discoverCalls = invoke.mock.calls.filter(([id]) => id === "obs.discover");
     expect(discoverCalls).toHaveLength(1);
   });
@@ -231,7 +235,7 @@ describe("prepareEmbed", () => {
     const invoke = pipelineInvoke({
       "obs.discover": () => ({ tools: [KIALI_ROW], meshNamespaces: [] }),
     });
-    const out = await prepareEmbed("grafana", "kind-local", { mode: "auto" }, invoke as never);
+    const out = await prepareEmbed(meta("grafana"), "kind-local", { mode: "auto" }, invoke as never);
     expect(out.error).toContain("No Grafana service found in kind-local");
     expect(out.error).toContain("Settings");
   });
@@ -243,7 +247,7 @@ describe("prepareEmbed", () => {
       },
     });
     const failed = await prepareEmbed(
-      "grafana",
+      meta("grafana"),
       "tusk-dev",
       { mode: "service", namespace: "infra", service: "grafana", port: 80 },
       failStart as never,
@@ -255,7 +259,7 @@ describe("prepareEmbed", () => {
       "obs.probe": () => ({ ok: false, frameBlocked: false, authRedirect: false, error: "connection refused" }),
     });
     const dead = await prepareEmbed(
-      "grafana",
+      meta("grafana"),
       "tusk-dev",
       { mode: "service", namespace: "infra", service: "grafana", port: 80 },
       neverAnswers as never,

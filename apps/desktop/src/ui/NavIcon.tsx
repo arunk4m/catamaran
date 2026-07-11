@@ -1,11 +1,15 @@
 import React from "react";
 import {
+  Activity,
   ArrowLeftRight,
   BellRing,
   Box,
+  Boxes,
   BriefcaseBusiness,
+  Bug,
   Circle,
   Clock3,
+  Cloud,
   Copy,
   Cpu,
   Database,
@@ -19,6 +23,7 @@ import {
   KeyRound,
   Layers3,
   LayoutDashboard,
+  LineChart,
   ListOrdered,
   Network,
   Radio,
@@ -35,11 +40,13 @@ import {
   ShipWheel,
   Signpost,
   SlidersHorizontal,
+  Telescope,
   TimerReset,
   UserRoundCheck,
   UserRoundCog,
   Webhook,
   Wind,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 
@@ -84,13 +91,39 @@ const RESOURCE_ICONS: Record<string, LucideIcon> = {
   helmreleases: ShipWheel,
   settings: Settings,
   newresource: FilePlus2,
-  kiali: Share2,
-  grafana: Gauge,
-  airflow: Wind,
-  redpanda: Radio,
-  temporal: History,
-  tusklens: ScanEye,
+  spyglass: Telescope,
 };
+
+/**
+ * lucide components for the observability icon picker, keyed by the names in
+ * `SPYGLASS_ICON_CHOICES` (lib/settings.ts). Used for per-tool icons in the
+ * launcher, palette, tabs and the custom-tool icon selector.
+ */
+export const SPYGLASS_ICON: Record<string, LucideIcon> = {
+  telescope: Telescope,
+  "share-2": Share2,
+  gauge: Gauge,
+  wind: Wind,
+  radio: Radio,
+  history: History,
+  "scan-eye": ScanEye,
+  activity: Activity,
+  "line-chart": LineChart,
+  database: Database,
+  boxes: Boxes,
+  network: Network,
+  workflow: Workflow,
+  bug: Bug,
+  shield: Shield,
+  cloud: Cloud,
+  server: Server,
+  "layout-dashboard": LayoutDashboard,
+};
+
+/** The lucide component for a spyglass icon name (telescope fallback). */
+export function spyglassIcon(name: string): LucideIcon {
+  return SPYGLASS_ICON[name] ?? Telescope;
+}
 
 export function iconForResourceKind(kind: string): LucideIcon {
   return RESOURCE_ICONS[kind] ?? Circle;

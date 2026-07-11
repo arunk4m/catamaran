@@ -248,3 +248,70 @@ describe("observability (spyglass) config", () => {
     expect(cfg.grafana).toEqual({ mode: "auto" });
   });
 });
+
+describe("custom observability tools", () => {
+  it("round-trips and sanitizes custom tools", async () => {
+    const { loadCustomTools, saveCustomTools } = await import("./settings");
+    expect(loadCustomTools()).toEqual([]);
+    saveCustomTools([
+      { id: "custom-lens", label: "Lens", icon: "scan-eye", namespace: "default", service: "tusk-lens-frontend", port: 3000 },
+    ]);
+    expect(loadCustomTools()).toEqual([
+      { id: "custom-lens", label: "Lens", icon: "scan-eye", namespace: "default", service: "tusk-lens-frontend", port: 3000 },
+    ]);
+
+    // Bad entries are dropped; an unknown icon falls back to telescope.
+    localStorage.setItem(
+      "catamaran.observability.customTools",
+      JSON.stringify([
+        { id: "ok", label: "OK", icon: "not-an-icon", namespace: "ns", service: "svc", port: 80 },
+        { id: "bad", label: "", namespace: "ns", service: "svc", port: 80 }, // empty label
+        { id: "bad2", label: "x", namespace: "ns", service: "svc", port: 0 }, // bad port
+      ]),
+    );
+    const tools = loadCustomTools();
+    expect(tools).toHaveLength(1);
+    expect(tools[0].icon).toBe("telescope");
+  });
+
+  it("resolves built-in + custom tools and their sources", async () => {
+    const {
+      resolveSpyglassTools,
+      findSpyglassTool,
+      spyglassSourceFor,
+      DEFAULT_OBSERVABILITY,
+      SPYGLASS_TOOL_IDS,
+    } = await import("./settings");
+    const custom = [
+      { id: "custom-lens", label: "Lens", icon: "scan-eye" as const, namespace: "default", service: "lens", port: 3000, savedPath: "/dashboard" },
+    ];
+    const all = resolveSpyglassTools(custom);
+    expect(all).toHaveLength(SPYGLASS_TOOL_IDS.length + 1);
+    expect(all.at(-1)?.id).toBe("custom-lens");
+    expect(findSpyglassTool("custom-lens", custom)?.builtin).toBe(false);
+    expect(findSpyglassTool("kiali", custom)?.builtin).toBe(true);
+
+    // A custom tool is always its pinned service, carrying its saved view.
+    expect(spyglassSourceFor("custom-lens", DEFAULT_OBSERVABILITY, custom)).toEqual({
+      mode: "service",
+      namespace: "default",
+      service: "lens",
+      port: 3000,
+      savedPath: "/dashboard",
+    });
+    // A built-in reads its configured source.
+    expect(spyglassSourceFor("kiali", DEFAULT_OBSERVABILITY, custom)).toEqual({ mode: "auto" });
+  });
+
+  it("generates unique custom tool ids", async () => {
+    const { makeCustomToolId } = await import("./settings");
+    const a = makeCustomToolId("My Tool", []);
+    expect(a).toBe("custom-my-tool");
+    const b = makeCustomToolId("My Tool", [
+      { id: "custom-my-tool", label: "x", icon: "telescope", namespace: "n", service: "s", port: 1 },
+    ]);
+    expect(b).toBe("custom-my-tool-2");
+    // Collisions with built-in ids are avoided too.
+    expect(makeCustomToolId("kiali", [])).not.toBe("kiali");
+  });
+});

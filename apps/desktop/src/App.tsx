@@ -50,12 +50,15 @@ import {
   saveAwsPortalUrl,
   loadObservabilityConfig,
   saveObservabilityConfig,
+  loadCustomTools,
+  saveCustomTools,
+  findSpyglassTool,
+  resolveSpyglassTools,
+  spyglassSourceFor,
   saveDeckLayout,
   type ObservabilityConfig,
-  type SpyglassTool,
-  SPYGLASS_TOOL_IDS,
+  type CustomSpyglassTool,
 } from "./lib/settings";
-import { SPYGLASS_LABELS } from "./lib/spyglass";
 import { SpyglassView } from "./components/SpyglassView";
 import {
   createDeck,
@@ -84,6 +87,8 @@ interface ViewTab {
   kind: ResourceKind;
   /** Present when the tab is a custom-resource (CRD) view. */
   crd?: CrdRef;
+  /** For a `spyglass` tab: which observability tool it embeds (built-in or custom id). */
+  spyglassToolId?: string;
   /** Deep-link target from global search (opens the resource's detail). */
   focus?: { name: string; namespace: string | null; nonce: number };
   /** For a "new resource" tab: the template kind to start from. */
@@ -103,10 +108,9 @@ function activeTabOf(pane: AppPane | null): ViewTab | null {
   return pane.tabs.find((t) => t.id === pane.activeTabId) ?? null;
 }
 
-/** Kinds that make sense to mirror across linked panes. */
 /** The embedded observability tools — kept alive in their own pane layer. */
-function isSpyglassKind(kind: ResourceKind): kind is SpyglassTool {
-  return (SPYGLASS_TOOL_IDS as string[]).includes(kind);
+function isSpyglassKind(kind: ResourceKind): boolean {
+  return kind === "spyglass";
 }
 
 function isMirrorableKind(kind: ResourceKind): boolean {
@@ -149,11 +153,17 @@ export function App() {
     setAwsPortalUrl(url);
     saveAwsPortalUrl(url);
   }
-  // Where Kiali and Grafana live (per-tool spyglass source).
+  // Where the built-in tools live (per-tool spyglass source).
   const [observability, setObservability] = useState<ObservabilityConfig>(loadObservabilityConfig);
   function changeObservability(config: ObservabilityConfig) {
     setObservability(config);
     saveObservabilityConfig(config);
+  }
+  // User-added observability tools (pinned service + icon).
+  const [customTools, setCustomTools] = useState<CustomSpyglassTool[]>(loadCustomTools);
+  function changeCustomTools(tools: CustomSpyglassTool[]) {
+    setCustomTools(tools);
+    saveCustomTools(tools);
   }
   const dockIdRef = useRef(1);
   const focusNonce = useRef(0);
@@ -333,24 +343,27 @@ export function App() {
   const activeTab = activeTabOf(pane);
   const activeCluster = activeTab?.cluster ?? null;
   const activeKind: ResourceKind = activeTab?.kind ?? "pods";
+  // Built-in + user-added observability tools, for the launcher and palette.
+  const spyglassTools = resolveSpyglassTools(customTools);
 
   /**
-   * Open (or focus) the singleton workspace tab for a spyglass tool. The tab
-   * always targets the focused cluster; re-opening from another cluster
-   * retargets it instead of stacking a second Kiali.
+   * Open (or focus) the singleton workspace tab for a spyglass tool (built-in
+   * or custom). The tab always targets the focused cluster; re-opening from
+   * another cluster retargets it instead of stacking a second copy.
    */
-  function openSpyglass(tool: SpyglassTool) {
+  function openSpyglass(toolId: string) {
     const cluster = activeCluster;
+    const meta = findSpyglassTool(toolId, customTools);
     if (!cluster) {
       notify.error(
         `Open a cluster first`,
-        `${SPYGLASS_LABELS[tool]} is looked up in the focused context.`,
+        `${meta?.label ?? "This tool"} is looked up in the focused context.`,
       );
       return;
     }
     setDeck((d) => {
       for (const p of d.panes) {
-        const existing = p.tabs.find((t) => t.kind === tool);
+        const existing = p.tabs.find((t) => t.kind === "spyglass" && t.spyglassToolId === toolId);
         if (existing) {
           return focusPane(
             updatePane(d, p.id, (x) => ({
@@ -366,7 +379,7 @@ export function App() {
       return focusPane(
         updatePane(d, d.focusedPaneId, (p) => ({
           ...p,
-          tabs: [...p.tabs, { id, cluster, kind: tool as ResourceKind }],
+          tabs: [...p.tabs, { id, cluster, kind: "spyglass" as ResourceKind, spyglassToolId: toolId }],
           activeTabId: id,
         })),
         d.focusedPaneId,
@@ -375,11 +388,20 @@ export function App() {
   }
 
   /** Persist (or clear) a spyglass tool's saved in-tool view. */
-  function saveSpyglassView(tool: SpyglassTool, path: string | null) {
-    const source = { ...observability[tool] };
+  function saveSpyglassView(toolId: string, path: string | null) {
+    const custom = customTools.find((t) => t.id === toolId);
+    if (custom) {
+      changeCustomTools(
+        customTools.map((t) =>
+          t.id === toolId ? { ...t, savedPath: path ?? undefined } : t,
+        ),
+      );
+      return;
+    }
+    const source = { ...(observability[toolId] ?? { mode: "auto" as const }) };
     if (path) source.savedPath = path;
     else delete source.savedPath;
-    changeObservability({ ...observability, [tool]: source });
+    changeObservability({ ...observability, [toolId]: source });
   }
   // Every cluster with an open tab, across both panes (drives the sidebar tree).
   const clusters = orderContexts(
@@ -727,13 +749,19 @@ export function App() {
     const query = paneQuery[p.id] ?? "";
     const setQuery = (q: string) => setPaneQuery((m) => ({ ...m, [p.id]: q }));
 
+    const kindLabel = (t: ViewTab) =>
+      t.crd
+        ? t.crd.kind
+        : t.kind === "spyglass"
+          ? findSpyglassTool(t.spyglassToolId ?? "", customTools)?.label ?? "Observability"
+          : RESOURCE_LABELS[t.kind];
     const tabDescriptors: TabDescriptor[] = p.tabs.map((t) => ({
       id: t.id,
       label: t.edit
         ? `edit: ${t.edit.kind}/${t.edit.name}`
         : t.cluster
-          ? `${t.crd ? t.crd.kind : RESOURCE_LABELS[t.kind]} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
-          : RESOURCE_LABELS[t.kind],
+          ? `${kindLabel(t)} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
+          : kindLabel(t),
     }));
 
     return (
@@ -824,24 +852,27 @@ export function App() {
                    * tool — it's already warm. The foreground content below is
                    * rendered only when the active tab is NOT a spyglass tool.
                    */}
-                  {p.tabs.map((t) =>
-                    isSpyglassKind(t.kind) && t.cluster ? (
+                  {p.tabs.map((t) => {
+                    if (t.kind !== "spyglass" || !t.cluster || !t.spyglassToolId) return null;
+                    const meta = findSpyglassTool(t.spyglassToolId, customTools);
+                    if (!meta) return null;
+                    return (
                       <div
                         key={`spyglass-${t.id}`}
                         className="cat-pane-keepalive"
                         hidden={t.id !== p.activeTabId}
                       >
                         <SpyglassView
-                          tool={t.kind as SpyglassTool}
+                          meta={meta}
                           context={t.cluster}
                           active={t.id === p.activeTabId}
-                          source={observability[t.kind as SpyglassTool]}
-                          onSaveView={(path) => saveSpyglassView(t.kind as SpyglassTool, path)}
+                          source={spyglassSourceFor(t.spyglassToolId, observability, customTools)}
+                          onSaveView={(path) => saveSpyglassView(t.spyglassToolId!, path)}
                           onOpenSettings={() => openSettings("observability")}
                         />
                       </div>
-                    ) : null,
-                  )}
+                    );
+                  })}
                   {isSpyglassKind(paneKind) ? null : paneKind === "settings" ? (
                     <SettingsView
                       key={`${paneActiveTab.id}:${settingsSectionNonce}`}
@@ -863,6 +894,8 @@ export function App() {
                       onAwsPortalUrlChange={changeAwsPortalUrl}
                       observability={observability}
                       onObservabilityChange={changeObservability}
+                      customTools={customTools}
+                      onCustomToolsChange={changeCustomTools}
                       activeContext={activeCluster}
                     />
                   ) : paneActiveTab.crd && paneCluster ? (
@@ -981,6 +1014,7 @@ export function App() {
         onToggleTheme={toggleThemeMode}
         onOpenSettings={openSettings}
         onOpenSpyglass={openSpyglass}
+        spyglassTools={spyglassTools}
         contextProfiles={contextProfiles}
         kubeconfigFiles={kubeconfigFiles}
         contextOrder={contextOrder}
@@ -1055,6 +1089,7 @@ export function App() {
           onToggleTheme: toggleThemeMode,
           onNewResource: () => openNewResource(),
           onOpenSpyglass: openSpyglass,
+          spyglassTools,
         }}
       />
       <Toaster position="top-right" richColors closeButton />

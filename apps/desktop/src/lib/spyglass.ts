@@ -1,20 +1,15 @@
 import { invokeCapability, type Invoker } from "../transport/transport";
 import {
-  spyglassMeta,
   SPYGLASS_CATALOG,
   validSavedPath,
   type SpyglassSource,
   type SpyglassTool,
+  type SpyglassToolMeta,
 } from "./settings";
 
 export const SPYGLASS_LABELS: Record<SpyglassTool, string> = Object.fromEntries(
   SPYGLASS_CATALOG.map((t) => [t.id, t.label]),
 ) as Record<SpyglassTool, string>;
-
-/** True for the mesh graph tool (Kiali) — the only tool with a special default view. */
-export function isMeshTool(tool: SpyglassTool): boolean {
-  return spyglassMeta(tool).mesh === true;
-}
 
 /** A tool found by `obs.discover`. */
 export interface DiscoveredTool {
@@ -236,19 +231,20 @@ async function discoverCached(context: string, invoke: Invoker) {
 }
 
 /**
- * Prepare `tool` for embedding against `context`: resolve where it lives
+ * Prepare a tool for embedding against `context`: resolve where it lives
  * (pinned or discovered), start the embed relay, find the tool's path
- * prefix, and wait until the relay answers. URL-mode sources come back as
- * `external` — a remote origin still sends its frame blockers, so it cannot
- * be embedded.
+ * prefix, and wait until the relay answers. Takes the tool's resolved `meta`
+ * (so custom, user-added tools work the same as built-ins). URL-mode sources
+ * come back as `external` — a remote origin still sends its frame blockers, so
+ * it cannot be embedded.
  */
 export async function prepareEmbed(
-  tool: SpyglassTool,
+  meta: SpyglassToolMeta,
   context: string | null,
   source: SpyglassSource,
   invoke: Invoker = invokeCapability,
 ): Promise<SpyglassPrepOutcome> {
-  const label = SPYGLASS_LABELS[tool];
+  const label = meta.label;
   if (source.mode === "url") {
     return { prep: { kind: "external", url: source.url } };
   }
@@ -256,7 +252,7 @@ export async function prepareEmbed(
     return { error: `Open a cluster first — ${label} is looked up in the focused context.` };
   }
 
-  const mesh = isMeshTool(tool);
+  const mesh = meta.mesh === true;
   let target: { namespace: string; service: string; port: number };
   let meshNamespaces: string[] = [];
   if (source.mode === "service") {
@@ -268,7 +264,7 @@ export async function prepareEmbed(
   } else {
     const found = await discoverCached(context, invoke);
     if (found.error) return { error: found.error };
-    const row = pickDiscovered(found.tools ?? [], tool);
+    const row = pickDiscovered(found.tools ?? [], meta.id);
     if (!row) {
       return {
         error: `No ${label} service found in ${context}. Pin one in Settings → Observability.`,

@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Check, ExternalLink, Radar, Square } from "lucide-react";
+import { Check, ExternalLink, Plus, Radar, Square, Trash2 } from "lucide-react";
 import { Button, Spinner, TextInput } from "../ui";
 import { notify } from "../lib/notify";
 import { openExternalUrl } from "../lib/aws";
+import { spyglassIcon } from "../ui/NavIcon";
 import {
   discoverTools,
   listSpyglassForwards,
@@ -13,13 +14,50 @@ import {
 } from "../lib/spyglass";
 import {
   spyglassMeta,
+  makeCustomToolId,
+  SPYGLASS_ICON_CHOICES,
   SPYGLASS_TOOL_IDS,
+  type CustomSpyglassTool,
   type ObservabilityConfig,
+  type SpyglassIconName,
   type SpyglassSource,
   type SpyglassTool,
 } from "../lib/settings";
 
 const TOOLS: SpyglassTool[] = SPYGLASS_TOOL_IDS;
+
+/** A grid of selectable lucide icons for a custom tool. */
+function IconPicker({
+  value,
+  onChange,
+  label,
+}: {
+  value: SpyglassIconName;
+  onChange: (icon: SpyglassIconName) => void;
+  label: string;
+}) {
+  return (
+    <div className="cat-spyglass__icons" role="group" aria-label={label}>
+      {SPYGLASS_ICON_CHOICES.map((name) => {
+        const Icon = spyglassIcon(name);
+        const active = value === name;
+        return (
+          <button
+            key={name}
+            type="button"
+            className={`cat-spyglass__icon${active ? " cat-spyglass__icon--active" : ""}`}
+            aria-label={name}
+            aria-pressed={active}
+            title={name}
+            onClick={() => onChange(name)}
+          >
+            <Icon aria-hidden="true" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 const MODE_CHOICES: Array<{ id: SpyglassSource["mode"]; label: string; description: string }> = [
   { id: "auto", label: "Auto-detect", description: "Find it in the focused cluster" },
@@ -54,10 +92,15 @@ function defaultForMode(
 export function SpyglassSettings({
   config,
   onConfigChange,
+  customTools = [],
+  onCustomToolsChange = () => {},
   activeContext = null,
 }: {
   config: ObservabilityConfig;
   onConfigChange: (config: ObservabilityConfig) => void;
+  /** User-added tools (pinned service + icon). */
+  customTools?: CustomSpyglassTool[];
+  onCustomToolsChange?: (tools: CustomSpyglassTool[]) => void;
   /** Context detection runs against (the focused pane's cluster). */
   activeContext?: string | null;
 }) {
@@ -108,6 +151,23 @@ export function SpyglassSettings({
 
   function setSource(tool: SpyglassTool, source: SpyglassSource) {
     onConfigChange({ ...config, [tool]: source });
+  }
+
+  function addCustomTool() {
+    const label = "New tool";
+    const id = makeCustomToolId(label, customTools);
+    onCustomToolsChange([
+      ...customTools,
+      { id, label, icon: "telescope", namespace: activeContext ? "" : "", service: "", port: 8080 },
+    ]);
+  }
+
+  function updateCustomTool(id: string, patch: Partial<CustomSpyglassTool>) {
+    onCustomToolsChange(customTools.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+
+  function removeCustomTool(id: string) {
+    onCustomToolsChange(customTools.filter((t) => t.id !== id));
   }
 
   async function stopForward(row: SpyglassForward) {
@@ -240,6 +300,86 @@ export function SpyglassSettings({
           </div>
         );
       })}
+
+      <div className="cat-spyglass__custom">
+        <div className="cat-spyglass__custom-head">
+          <span>
+            <strong>Your tools</strong>
+            <small>
+              Add any in-cluster web UI — give it a name, namespace, service and port, pick an
+              icon, and it appears in the Observability menu.
+            </small>
+          </span>
+          <Button variant="ghost" size="sm" onClick={addCustomTool}>
+            <Plus data-icon="inline-start" />
+            Add tool
+          </Button>
+        </div>
+        {customTools.length === 0 ? (
+          <p className="cat-sso-profiles__empty">No custom tools yet.</p>
+        ) : (
+          customTools.map((tool) => (
+            <div key={tool.id} className="cat-spyglass__tool cat-spyglass__tool--custom">
+              <div className="cat-spyglass__custom-row">
+                <label className="cat-settings-field cat-spyglass__custom-name">
+                  <span>Name</span>
+                  <TextInput
+                    value={tool.label}
+                    onValueChange={(v) => updateCustomTool(tool.id, { label: v })}
+                    aria-label={`Custom tool ${tool.id} name`}
+                  />
+                </label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeCustomTool(tool.id)}
+                  aria-label={`Remove ${tool.label}`}
+                  title="Remove this tool"
+                >
+                  <Trash2 data-icon="inline-start" />
+                  Remove
+                </Button>
+              </div>
+              <div className="cat-spyglass__service">
+                <label className="cat-settings-field">
+                  <span>Namespace</span>
+                  <TextInput
+                    value={tool.namespace}
+                    onValueChange={(v) => updateCustomTool(tool.id, { namespace: v })}
+                    aria-label={`${tool.label} namespace`}
+                  />
+                </label>
+                <label className="cat-settings-field">
+                  <span>Service</span>
+                  <TextInput
+                    value={tool.service}
+                    onValueChange={(v) => updateCustomTool(tool.id, { service: v })}
+                    aria-label={`${tool.label} service`}
+                  />
+                </label>
+                <label className="cat-settings-field">
+                  <span>Port</span>
+                  <TextInput
+                    value={String(tool.port)}
+                    onValueChange={(v) => {
+                      const port = Number.parseInt(v, 10);
+                      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+                        updateCustomTool(tool.id, { port });
+                      }
+                    }}
+                    aria-label={`${tool.label} port`}
+                  />
+                </label>
+              </div>
+              <IconPicker
+                value={tool.icon}
+                onChange={(icon) => updateCustomTool(tool.id, { icon })}
+                label={`${tool.label} icon`}
+              />
+            </div>
+          ))
+        )}
+      </div>
 
       <div className="cat-sso-profiles">
         <span>

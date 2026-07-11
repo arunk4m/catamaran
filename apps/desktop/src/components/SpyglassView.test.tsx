@@ -24,6 +24,10 @@ vi.mock("../lib/aws", () => ({
 }));
 
 import { SpyglassView, looksLikeAuthError } from "./SpyglassView";
+import { SPYGLASS_CATALOG } from "../lib/settings";
+
+const KIALI_META = SPYGLASS_CATALOG.find((t) => t.id === "kiali")!;
+const GRAFANA_META = SPYGLASS_CATALOG.find((t) => t.id === "grafana")!;
 
 const EMBED = {
   kind: "embed" as const,
@@ -66,7 +70,7 @@ function postSpyglassLocation(href: string, origin = "http://127.0.0.1:51000") {
 describe("SpyglassView", () => {
   it("prepares the embed and renders the iframe on the initial path", async () => {
     prepareMock.mockResolvedValue({ prep: EMBED });
-    render(<SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} />);
+    render(<SpyglassView meta={KIALI_META} context="tusk-dev" source={{ mode: "auto" }} />);
     expect(screen.getByText(/Hoisting the spyglass/)).toBeDefined();
 
     const frame = await screen.findByTitle("Kiali — tusk-dev");
@@ -77,7 +81,7 @@ describe("SpyglassView", () => {
   it("shows the error state and retries", async () => {
     prepareMock.mockResolvedValueOnce({ error: "No Kiali service found in kind-local." });
     prepareMock.mockResolvedValueOnce({ prep: EMBED });
-    render(<SpyglassView tool="kiali" context="kind-local" source={{ mode: "auto" }} />);
+    render(<SpyglassView meta={KIALI_META} context="kind-local" source={{ mode: "auto" }} />);
 
     expect(await screen.findByRole("alert")).toBeDefined();
     expect(screen.getByText("No Kiali service found in kind-local.")).toBeDefined();
@@ -98,7 +102,7 @@ describe("SpyglassView", () => {
     profileForContextMock.mockReturnValue("tusk-dev");
     ssoLoginMock.mockResolvedValue({ ok: true });
 
-    render(<SpyglassView tool="grafana" context="tusk-dev" source={{ mode: "auto" }} />);
+    render(<SpyglassView meta={GRAFANA_META} context="tusk-dev" source={{ mode: "auto" }} />);
     expect(await screen.findByRole("alert")).toBeDefined();
     // Auth errors surface the credential-refresh path.
     const refresh = await screen.findByText("Refresh AWS access");
@@ -113,7 +117,7 @@ describe("SpyglassView", () => {
   it("explains external URLs and opens them in the browser", async () => {
     prepareMock.mockResolvedValue({ prep: { kind: "external", url: "https://grafana.example" } });
     render(
-      <SpyglassView tool="grafana" context="tusk-dev" source={{ mode: "url", url: "https://grafana.example" }} />,
+      <SpyglassView meta={GRAFANA_META} context="tusk-dev" source={{ mode: "url", url: "https://grafana.example" }} />,
     );
     expect(await screen.findByText(/can't be\s+embedded/)).toBeDefined();
     // Toolbar and notice card both offer the browser hand-off.
@@ -125,7 +129,7 @@ describe("SpyglassView", () => {
     prepareMock.mockResolvedValue({ prep: EMBED });
     const onSaveView = vi.fn();
     render(
-      <SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} onSaveView={onSaveView} />,
+      <SpyglassView meta={KIALI_META} context="tusk-dev" source={{ mode: "auto" }} onSaveView={onSaveView} />,
     );
     await screen.findByTitle("Kiali — tusk-dev");
 
@@ -140,7 +144,7 @@ describe("SpyglassView", () => {
     prepareMock.mockResolvedValue({ prep: EMBED });
     const onSaveView = vi.fn();
     render(
-      <SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} onSaveView={onSaveView} />,
+      <SpyglassView meta={KIALI_META} context="tusk-dev" source={{ mode: "auto" }} onSaveView={onSaveView} />,
     );
     await screen.findByTitle("Kiali — tusk-dev");
 
@@ -158,7 +162,7 @@ describe("SpyglassView", () => {
     const onSaveView = vi.fn();
     render(
       <SpyglassView
-        tool="kiali"
+        meta={KIALI_META}
         context="tusk-dev"
         source={{ mode: "auto", savedPath: saved }}
         onSaveView={onSaveView}
@@ -178,7 +182,7 @@ describe("SpyglassView", () => {
 
   it("reload re-prepares (reviving a dead tunnel)", async () => {
     prepareMock.mockResolvedValue({ prep: EMBED });
-    render(<SpyglassView tool="grafana" context="tusk-dev" source={{ mode: "auto" }} />);
+    render(<SpyglassView meta={GRAFANA_META} context="tusk-dev" source={{ mode: "auto" }} />);
     await screen.findByTitle("Grafana — tusk-dev");
     fireEvent.click(screen.getByText("Reload"));
     await waitFor(() => expect(prepareMock).toHaveBeenCalledTimes(2));
@@ -187,7 +191,7 @@ describe("SpyglassView", () => {
   it("steers focus away from the iframe when the tab is inactive (kept alive)", async () => {
     prepareMock.mockResolvedValue({ prep: EMBED });
     const { rerender } = render(
-      <SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} active={true} />,
+      <SpyglassView meta={KIALI_META} context="tusk-dev" source={{ mode: "auto" }} active={true} />,
     );
     const frame = await screen.findByTitle("Kiali — tusk-dev");
     expect(frame.getAttribute("aria-hidden")).toBeNull();
@@ -195,7 +199,7 @@ describe("SpyglassView", () => {
 
     // Made inactive by a tab switch: the iframe stays mounted but drops out of
     // the tab order and is hidden from assistive tech.
-    rerender(<SpyglassView tool="kiali" context="tusk-dev" source={{ mode: "auto" }} active={false} />);
+    rerender(<SpyglassView meta={KIALI_META} context="tusk-dev" source={{ mode: "auto" }} active={false} />);
     const same = screen.getByTitle("Kiali — tusk-dev");
     expect(same).toBe(frame); // not remounted
     expect(same.getAttribute("aria-hidden")).toBe("true");
