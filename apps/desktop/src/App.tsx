@@ -52,6 +52,8 @@ import {
   saveObservabilityConfig,
   loadCustomTools,
   saveCustomTools,
+  loadHiddenTools,
+  saveHiddenTools,
   findSpyglassTool,
   resolveSpyglassTools,
   spyglassSourceFor,
@@ -164,6 +166,12 @@ export function App() {
   function changeCustomTools(tools: CustomSpyglassTool[]) {
     setCustomTools(tools);
     saveCustomTools(tools);
+  }
+  // Built-in tools the user has hidden from the launcher/palette.
+  const [hiddenTools, setHiddenTools] = useState<string[]>(loadHiddenTools);
+  function changeHiddenTools(ids: string[]) {
+    setHiddenTools(ids);
+    saveHiddenTools(ids);
   }
   const dockIdRef = useRef(1);
   const focusNonce = useRef(0);
@@ -343,8 +351,8 @@ export function App() {
   const activeTab = activeTabOf(pane);
   const activeCluster = activeTab?.cluster ?? null;
   const activeKind: ResourceKind = activeTab?.kind ?? "pods";
-  // Built-in + user-added observability tools, for the launcher and palette.
-  const spyglassTools = resolveSpyglassTools(customTools);
+  // Visible built-in + user-added observability tools, for launcher and palette.
+  const spyglassTools = resolveSpyglassTools(customTools, hiddenTools);
 
   /**
    * Open (or focus) the singleton workspace tab for a spyglass tool (built-in
@@ -896,6 +904,8 @@ export function App() {
                       onObservabilityChange={changeObservability}
                       customTools={customTools}
                       onCustomToolsChange={changeCustomTools}
+                      hiddenTools={hiddenTools}
+                      onHiddenToolsChange={changeHiddenTools}
                       activeContext={activeCluster}
                     />
                   ) : paneActiveTab.crd && paneCluster ? (

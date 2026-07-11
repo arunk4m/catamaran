@@ -240,6 +240,7 @@ export function saveAwsPortalUrl(url: string): void {
 
 const OBSERVABILITY_KEY = "catamaran.observability";
 const CUSTOM_TOOLS_KEY = "catamaran.observability.customTools";
+const HIDDEN_TOOLS_KEY = "catamaran.observability.hiddenTools";
 
 /** A tool id — a built-in id or a `custom-…` id for a user-added tool. */
 export type SpyglassTool = string;
@@ -410,6 +411,32 @@ export function saveCustomTools(tools: CustomSpyglassTool[]): void {
   }
 }
 
+/** Built-in tool ids the user has hidden from the launcher/palette. */
+export function loadHiddenTools(): string[] {
+  try {
+    const raw = stored(HIDDEN_TOOLS_KEY);
+    if (!raw) return [];
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveHiddenTools(ids: string[]): void {
+  try {
+    localStorage.setItem(HIDDEN_TOOLS_KEY, JSON.stringify([...new Set(ids)]));
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
+/** Built-in tools the user has hidden, as metas (for the "restore" list). */
+export function hiddenBuiltinMetas(hidden: string[]): SpyglassToolMeta[] {
+  const hiddenSet = new Set(hidden);
+  return SPYGLASS_CATALOG.filter((t) => hiddenSet.has(t.id));
+}
+
 /** Turn a custom tool into the same meta shape as a built-in. */
 export function customToolMeta(tool: CustomSpyglassTool): SpyglassToolMeta {
   return {
@@ -422,9 +449,19 @@ export function customToolMeta(tool: CustomSpyglassTool): SpyglassToolMeta {
   };
 }
 
-/** The full tool list: built-ins first, then user-added tools. */
-export function resolveSpyglassTools(custom: CustomSpyglassTool[]): SpyglassToolMeta[] {
-  return [...SPYGLASS_CATALOG, ...custom.map(customToolMeta)];
+/**
+ * The full tool list for the launcher/palette: visible built-ins first, then
+ * user-added tools. `hidden` removes built-ins the user chose to hide.
+ */
+export function resolveSpyglassTools(
+  custom: CustomSpyglassTool[],
+  hidden: string[] = [],
+): SpyglassToolMeta[] {
+  const hiddenSet = new Set(hidden);
+  return [
+    ...SPYGLASS_CATALOG.filter((t) => !hiddenSet.has(t.id)),
+    ...custom.map(customToolMeta),
+  ];
 }
 
 /** Look up a tool's meta across built-ins and custom tools. */

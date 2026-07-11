@@ -303,6 +303,23 @@ describe("custom observability tools", () => {
     expect(spyglassSourceFor("kiali", DEFAULT_OBSERVABILITY, custom)).toEqual({ mode: "auto" });
   });
 
+  it("hides built-in tools and filters the resolved list", async () => {
+    const { loadHiddenTools, saveHiddenTools, resolveSpyglassTools, hiddenBuiltinMetas } =
+      await import("./settings");
+    expect(loadHiddenTools()).toEqual([]);
+    saveHiddenTools(["tusklens", "temporal", "tusklens"]); // dedupes
+    expect(loadHiddenTools().sort()).toEqual(["temporal", "tusklens"]);
+
+    const visible = resolveSpyglassTools([], ["tusklens", "temporal"]);
+    const ids = visible.map((t) => t.id);
+    expect(ids).not.toContain("tusklens");
+    expect(ids).not.toContain("temporal");
+    expect(ids).toContain("kiali");
+
+    const hidden = hiddenBuiltinMetas(["tusklens", "temporal"]).map((t) => t.id);
+    expect(hidden.sort()).toEqual(["temporal", "tusklens"]);
+  });
+
   it("generates unique custom tool ids", async () => {
     const { makeCustomToolId } = await import("./settings");
     const a = makeCustomToolId("My Tool", []);

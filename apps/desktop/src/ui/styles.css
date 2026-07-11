@@ -4384,6 +4384,12 @@ button,
   border-radius: var(--cat-radius-lg, 14px);
   padding: 14px;
 }
+.cat-spyglass__tool-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
 .cat-spyglass__tool-name {
   display: flex;
   flex-direction: column;

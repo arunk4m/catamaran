@@ -133,6 +133,8 @@ export function SettingsView({
   onObservabilityChange = () => {},
   customTools = [],
   onCustomToolsChange = () => {},
+  hiddenTools = [],
+  onHiddenToolsChange = () => {},
   activeContext = null,
   initialSection = "appearance",
 }: {
@@ -158,6 +160,9 @@ export function SettingsView({
   /** User-added observability tools. */
   customTools?: CustomSpyglassTool[];
   onCustomToolsChange?: (tools: CustomSpyglassTool[]) => void;
+  /** Built-in tools hidden from the launcher/palette. */
+  hiddenTools?: string[];
+  onHiddenToolsChange?: (ids: string[]) => void;
   /** The focused pane's cluster, used by observability detection. */
   activeContext?: string | null;
   /** Section to open on mount (e.g. deep-linked from the update toast). */
@@ -897,6 +902,8 @@ export function SettingsView({
                 onConfigChange={onObservabilityChange}
                 customTools={customTools}
                 onCustomToolsChange={onCustomToolsChange}
+                hiddenTools={hiddenTools}
+                onHiddenToolsChange={onHiddenToolsChange}
                 activeContext={activeContext}
               />
             </SectionPanel>

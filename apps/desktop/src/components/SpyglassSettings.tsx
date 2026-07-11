@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Check, ExternalLink, Plus, Radar, Square, Trash2 } from "lucide-react";
-import { Button, Spinner, TextInput } from "../ui";
+import { Check, ExternalLink, Plus, Radar, RotateCcw, Square, Trash2, X } from "lucide-react";
+import { Button, ConfirmDialog, Spinner, TextInput } from "../ui";
 import { notify } from "../lib/notify";
 import { openExternalUrl } from "../lib/aws";
 import { spyglassIcon } from "../ui/NavIcon";
@@ -14,6 +14,7 @@ import {
 } from "../lib/spyglass";
 import {
   spyglassMeta,
+  hiddenBuiltinMetas,
   makeCustomToolId,
   SPYGLASS_ICON_CHOICES,
   SPYGLASS_TOOL_IDS,
@@ -25,6 +26,11 @@ import {
 } from "../lib/settings";
 
 const TOOLS: SpyglassTool[] = SPYGLASS_TOOL_IDS;
+
+/** A tool queued for removal, awaiting confirmation. */
+type PendingRemoval =
+  | { kind: "builtin"; id: string; label: string }
+  | { kind: "custom"; id: string; label: string };
 
 /** A grid of selectable lucide icons for a custom tool. */
 function IconPicker({
@@ -94,6 +100,8 @@ export function SpyglassSettings({
   onConfigChange,
   customTools = [],
   onCustomToolsChange = () => {},
+  hiddenTools = [],
+  onHiddenToolsChange = () => {},
   activeContext = null,
 }: {
   config: ObservabilityConfig;
@@ -101,12 +109,18 @@ export function SpyglassSettings({
   /** User-added tools (pinned service + icon). */
   customTools?: CustomSpyglassTool[];
   onCustomToolsChange?: (tools: CustomSpyglassTool[]) => void;
+  /** Built-in tools hidden from the launcher/palette. */
+  hiddenTools?: string[];
+  onHiddenToolsChange?: (ids: string[]) => void;
   /** Context detection runs against (the focused pane's cluster). */
   activeContext?: string | null;
 }) {
   const [detecting, setDetecting] = useState(false);
   const [detected, setDetected] = useState<DiscoveredTool[] | null>(null);
   const [forwards, setForwards] = useState<SpyglassForward[] | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+  const visibleBuiltins = TOOLS.filter((t) => !hiddenTools.includes(t));
+  const hiddenMetas = hiddenBuiltinMetas(hiddenTools);
 
   const refreshForwards = useCallback(async () => {
     const { forwards: rows } = await listSpyglassForwards();
@@ -170,6 +184,21 @@ export function SpyglassSettings({
     onCustomToolsChange(customTools.filter((t) => t.id !== id));
   }
 
+  /** Apply the pending removal: hide a built-in, or delete a custom tool. */
+  function confirmRemoval() {
+    if (!pendingRemoval) return;
+    if (pendingRemoval.kind === "builtin") {
+      onHiddenToolsChange([...hiddenTools, pendingRemoval.id]);
+    } else {
+      removeCustomTool(pendingRemoval.id);
+    }
+    setPendingRemoval(null);
+  }
+
+  function restoreBuiltin(id: string) {
+    onHiddenToolsChange(hiddenTools.filter((t) => t !== id));
+  }
+
   async function stopForward(row: SpyglassForward) {
     const { error } = await spyglassForwardStop({
       context: row.context,
@@ -199,15 +228,29 @@ export function SpyglassSettings({
         </Button>
       </div>
 
-      {TOOLS.map((tool) => {
+      {visibleBuiltins.map((tool) => {
         const source: SpyglassSource = config[tool] ?? { mode: "auto" };
         const hint = detected?.find((t) => t.tool === tool)?.ingressUrl ?? null;
         return (
           <div key={tool} className="cat-spyglass__tool">
-            <span className="cat-spyglass__tool-name">
-              <strong>{SPYGLASS_LABELS[tool]}</strong>
-              <small>{spyglassMeta(tool).blurb}</small>
-            </span>
+            <div className="cat-spyglass__tool-head">
+              <span className="cat-spyglass__tool-name">
+                <strong>{SPYGLASS_LABELS[tool]}</strong>
+                <small>{spyglassMeta(tool).blurb}</small>
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`Remove ${SPYGLASS_LABELS[tool]}`}
+                title="Remove this tool from the Observability menu"
+                onClick={() =>
+                  setPendingRemoval({ kind: "builtin", id: tool, label: SPYGLASS_LABELS[tool] })
+                }
+              >
+                <X data-icon="inline-start" />
+                Remove
+              </Button>
+            </div>
             <div className="cat-settings-update__channels" role="group" aria-label={`${SPYGLASS_LABELS[tool]} source`}>
               {MODE_CHOICES.map(({ id, label, description }) => (
                 <button
@@ -332,9 +375,11 @@ export function SpyglassSettings({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => removeCustomTool(tool.id)}
+                  onClick={() =>
+                    setPendingRemoval({ kind: "custom", id: tool.id, label: tool.label })
+                  }
                   aria-label={`Remove ${tool.label}`}
-                  title="Remove this tool"
+                  title="Delete this tool"
                 >
                   <Trash2 data-icon="inline-start" />
                   Remove
@@ -381,6 +426,27 @@ export function SpyglassSettings({
         )}
       </div>
 
+      {hiddenMetas.length > 0 && (
+        <div className="cat-sso-profiles">
+          <span>
+            <strong>Hidden built-in tools</strong>
+            <small>Removed from the Observability menu — restore any time.</small>
+          </span>
+          <ul>
+            {hiddenMetas.map((meta) => (
+              <li key={meta.id}>
+                <code>{meta.label}</code>
+                <small>{meta.blurb}</small>
+                <Button variant="ghost" size="sm" onClick={() => restoreBuiltin(meta.id)}>
+                  <RotateCcw data-icon="inline-start" />
+                  Restore
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="cat-sso-profiles">
         <span>
           <strong>Active spyglass tunnels</strong>
@@ -407,6 +473,21 @@ export function SpyglassSettings({
           </ul>
         )}
       </div>
+
+      {pendingRemoval && (
+        <ConfirmDialog
+          title={`Remove ${pendingRemoval.label}?`}
+          message={
+            pendingRemoval.kind === "builtin"
+              ? `${pendingRemoval.label} will be removed from the Observability menu. You can restore it from the "Hidden built-in tools" list below.`
+              : `${pendingRemoval.label} will be permanently deleted from your observability tools.`
+          }
+          confirmLabel="Remove"
+          danger
+          onConfirm={confirmRemoval}
+          onCancel={() => setPendingRemoval(null)}
+        />
+      )}
     </div>
   );
 }

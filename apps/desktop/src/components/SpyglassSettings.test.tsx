@@ -162,12 +162,12 @@ describe("SpyglassSettings custom tools", () => {
     const onCustomToolsChange = vi.fn();
     const custom = [
       {
-        id: "custom-lens",
-        label: "Tusk Lens",
+        id: "custom-jaeger",
+        label: "Jaeger",
         icon: "scan-eye" as const,
-        namespace: "default",
-        service: "tusk-lens-frontend",
-        port: 3000,
+        namespace: "observability",
+        service: "jaeger-query",
+        port: 16686,
       },
     ];
     const { rerender } = render(
@@ -181,13 +181,13 @@ describe("SpyglassSettings custom tools", () => {
     );
 
     // Existing custom tool's fields render and edit.
-    expect((screen.getByLabelText("Tusk Lens namespace") as HTMLInputElement).value).toBe("default");
-    fireEvent.change(screen.getByLabelText("Tusk Lens service"), { target: { value: "lens-ui" } });
-    expect(onCustomToolsChange).toHaveBeenCalledWith([{ ...custom[0], service: "lens-ui" }]);
+    expect((screen.getByLabelText("Jaeger namespace") as HTMLInputElement).value).toBe("observability");
+    fireEvent.change(screen.getByLabelText("Jaeger service"), { target: { value: "jaeger-ui" } });
+    expect(onCustomToolsChange).toHaveBeenCalledWith([{ ...custom[0], service: "jaeger-ui" }]);
 
     // Icon picker switches the icon.
     onCustomToolsChange.mockClear();
-    const iconGroup = screen.getByRole("group", { name: "Tusk Lens icon" });
+    const iconGroup = screen.getByRole("group", { name: "Jaeger icon" });
     fireEvent.click(iconGroup.querySelector('[aria-label="workflow"]')!);
     expect(onCustomToolsChange).toHaveBeenCalledWith([{ ...custom[0], icon: "workflow" }]);
 
@@ -199,9 +199,10 @@ describe("SpyglassSettings custom tools", () => {
     expect(added).toHaveLength(2);
     expect(added[1].id).toMatch(/^custom-/);
 
-    // Remove drops it.
+    // Remove asks for confirmation, then drops it.
     onCustomToolsChange.mockClear();
-    fireEvent.click(screen.getByLabelText("Remove Tusk Lens"));
+    fireEvent.click(screen.getByLabelText("Remove Jaeger"));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" })); // confirm
     expect(onCustomToolsChange).toHaveBeenCalledWith([]);
 
     // Empty state when there are none.
@@ -215,5 +216,55 @@ describe("SpyglassSettings custom tools", () => {
       />,
     );
     expect(screen.getByText("No custom tools yet.")).toBeDefined();
+  });
+
+  it("hides a built-in tool after confirmation and restores it", () => {
+    const onHiddenToolsChange = vi.fn();
+    const { rerender } = render(
+      <SpyglassSettings
+        config={DEFAULT_OBSERVABILITY}
+        onConfigChange={() => {}}
+        hiddenTools={[]}
+        onHiddenToolsChange={onHiddenToolsChange}
+        activeContext="tusk-dev"
+      />,
+    );
+    // Remove Tusk Lens (built-in) → confirm.
+    fireEvent.click(screen.getByLabelText("Remove Tusk Lens"));
+    expect(screen.getByText(/will be removed from the Observability menu/)).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(onHiddenToolsChange).toHaveBeenCalledWith(["tusklens"]);
+
+    // With it hidden, its card is gone and it shows in the restore list.
+    rerender(
+      <SpyglassSettings
+        config={DEFAULT_OBSERVABILITY}
+        onConfigChange={() => {}}
+        hiddenTools={["tusklens"]}
+        onHiddenToolsChange={onHiddenToolsChange}
+        activeContext="tusk-dev"
+      />,
+    );
+    expect(screen.queryByLabelText("Tusk Lens namespace")).toBeNull();
+    expect(screen.getByText("Hidden built-in tools")).toBeDefined();
+    onHiddenToolsChange.mockClear();
+    fireEvent.click(screen.getByText("Restore"));
+    expect(onHiddenToolsChange).toHaveBeenCalledWith([]);
+  });
+
+  it("cancelling removal keeps the tool", () => {
+    const onHiddenToolsChange = vi.fn();
+    render(
+      <SpyglassSettings
+        config={DEFAULT_OBSERVABILITY}
+        onConfigChange={() => {}}
+        hiddenTools={[]}
+        onHiddenToolsChange={onHiddenToolsChange}
+        activeContext="tusk-dev"
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Remove Grafana"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onHiddenToolsChange).not.toHaveBeenCalled();
   });
 });
