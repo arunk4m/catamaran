@@ -1,17 +1,37 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Bookmark, ExternalLink, RotateCcw, RefreshCw, Settings2 } from "lucide-react";
+import { Bookmark, ExternalLink, KeyRound, RotateCcw, RefreshCw, Settings2 } from "lucide-react";
 import { Button, LoadingState } from "../ui";
 import { notify } from "../lib/notify";
-import { openExternalUrl } from "../lib/aws";
-import { prepareEmbed, SPYGLASS_LABELS, type SpyglassEmbed } from "../lib/spyglass";
+import { openExternalUrl, ssoProfiles, ssoLogin, profileForContext } from "../lib/aws";
+import { prepareEmbed, isMeshTool, SPYGLASS_LABELS, type SpyglassEmbed } from "../lib/spyglass";
 import { validSavedPath, type SpyglassSource, type SpyglassTool } from "../lib/settings";
 import { invokeCapability, type Invoker } from "../transport/transport";
 
 type Phase =
   | { phase: "loading" }
-  | { phase: "error"; message: string }
+  | { phase: "error"; message: string; auth: boolean }
   | { phase: "external"; url: string }
   | { phase: "ready"; embed: SpyglassEmbed; src: string; nonce: number };
+
+/**
+ * Does this failure look like expired cluster credentials (SSO token lapsed),
+ * rather than a missing tool or a real outage? Those are recoverable in-app by
+ * refreshing AWS access, so we surface that action.
+ */
+export function looksLikeAuthError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("credential") ||
+    m.includes("token") ||
+    m.includes("expired") ||
+    m.includes("unauthorized") ||
+    m.includes("401") ||
+    m.includes("403") ||
+    m.includes("forbidden") ||
+    m.includes("the server has asked for the client to provide credentials") ||
+    m.includes("building the cluster client")
+  );
+}
 
 /**
  * A spyglass tool (Kiali / Grafana) embedded in the workspace: the backend
@@ -59,11 +79,14 @@ export function SpyglassView({
         ? `url:${source.url}`
         : "auto";
 
+  const [refreshingAws, setRefreshingAws] = useState(false);
+
   const prepare = useCallback(async () => {
     setState({ phase: "loading" });
     const { prep, error } = await prepareEmbed(tool, context, sourceRef.current, invoke);
     if (error || !prep) {
-      setState({ phase: "error", message: error ?? "The spyglass could not be prepared." });
+      const message = error ?? "The spyglass could not be prepared.";
+      setState({ phase: "error", message, auth: looksLikeAuthError(message) });
       return;
     }
     if (prep.kind === "external") {
@@ -117,13 +140,42 @@ export function SpyglassView({
     }
   }
 
+  /**
+   * Recover from expired cluster credentials without leaving the tool: find
+   * the SSO profile backing this context, run `aws sso login`, then re-prepare
+   * — so a lapsed token is a two-click fix, not a dead tab.
+   */
+  async function refreshAwsAndReload() {
+    setRefreshingAws(true);
+    try {
+      const { profiles } = await ssoProfiles();
+      const profile = profileForContext(profiles ?? [], context);
+      if (!profile) {
+        notify.error(
+          "No AWS SSO profile found",
+          "This context isn't pinned to an AWS_PROFILE in your kubeconfig.",
+        );
+        return;
+      }
+      const { ok, error } = await ssoLogin(profile);
+      if (!ok) {
+        notify.error(error ?? "AWS SSO login failed");
+        return;
+      }
+      notify.success(`AWS access refreshed for ${profile}`);
+      await prepare();
+    } finally {
+      setRefreshingAws(false);
+    }
+  }
+
   return (
     <div className="cat-spyglass-view">
       <header className="cat-spyglass-view__bar">
         <span className="cat-spyglass-view__title">
           <strong>{label}</strong>
           {context && <small>{context}</small>}
-          {state.phase === "ready" && tool === "kiali" && state.embed.meshNamespaces.length > 0 && (
+          {state.phase === "ready" && isMeshTool(tool) && state.embed.meshNamespaces.length > 0 && (
             <small className="cat-spyglass-view__mesh">
               mesh: {state.embed.meshNamespaces.join(", ")}
             </small>
@@ -173,8 +225,24 @@ export function SpyglassView({
           <div className="cat-spyglass-view__notice" role="alert">
             <strong>Couldn&apos;t reach {label}</strong>
             <p>{state.message}</p>
+            {state.auth && (
+              <p className="cat-spyglass-view__hint">
+                This usually means your cluster credentials expired. Refresh AWS access and
+                Catamaran will reconnect.
+              </p>
+            )}
             <span>
-              <Button size="sm" onClick={() => void prepare()}>
+              {state.auth && (
+                <Button size="sm" disabled={refreshingAws} onClick={() => void refreshAwsAndReload()}>
+                  <KeyRound data-icon="inline-start" />
+                  {refreshingAws ? "Waiting for approval…" : "Refresh AWS access"}
+                </Button>
+              )}
+              <Button
+                variant={state.auth ? "ghost" : "default"}
+                size="sm"
+                onClick={() => void prepare()}
+              >
                 <RefreshCw data-icon="inline-start" />
                 Retry
               </Button>

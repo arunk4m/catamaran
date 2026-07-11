@@ -2,19 +2,28 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
-const { prepareMock, notifyMock, openUrlMock } = vi.hoisted(() => ({
-  prepareMock: vi.fn(),
-  notifyMock: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
-  openUrlMock: vi.fn(),
-}));
+const { prepareMock, notifyMock, openUrlMock, ssoProfilesMock, ssoLoginMock, profileForContextMock } =
+  vi.hoisted(() => ({
+    prepareMock: vi.fn(),
+    notifyMock: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+    openUrlMock: vi.fn(),
+    ssoProfilesMock: vi.fn(),
+    ssoLoginMock: vi.fn(),
+    profileForContextMock: vi.fn(),
+  }));
 vi.mock("../lib/spyglass", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/spyglass")>();
   return { ...actual, prepareEmbed: prepareMock };
 });
 vi.mock("../lib/notify", () => ({ notify: notifyMock }));
-vi.mock("../lib/aws", () => ({ openExternalUrl: openUrlMock }));
+vi.mock("../lib/aws", () => ({
+  openExternalUrl: openUrlMock,
+  ssoProfiles: ssoProfilesMock,
+  ssoLogin: ssoLoginMock,
+  profileForContext: profileForContextMock,
+}));
 
-import { SpyglassView } from "./SpyglassView";
+import { SpyglassView, looksLikeAuthError } from "./SpyglassView";
 
 const EMBED = {
   kind: "embed" as const,
@@ -29,6 +38,20 @@ beforeEach(() => {
   prepareMock.mockReset();
   notifyMock.success.mockReset();
   openUrlMock.mockReset();
+  ssoProfilesMock.mockReset();
+  ssoLoginMock.mockReset();
+  profileForContextMock.mockReset();
+});
+
+describe("looksLikeAuthError", () => {
+  it("flags credential/token failures and not missing tools or outages", () => {
+    expect(looksLikeAuthError("The server has asked for the client to provide credentials")).toBe(true);
+    expect(looksLikeAuthError("building the cluster client timed out")).toBe(true);
+    expect(looksLikeAuthError("Unauthorized (401)")).toBe(true);
+    expect(looksLikeAuthError("your token or client certificate may have expired")).toBe(true);
+    expect(looksLikeAuthError("No Grafana service found in kind-local.")).toBe(false);
+    expect(looksLikeAuthError("service has no running pods")).toBe(false);
+  });
 });
 
 function postSpyglassLocation(href: string, origin = "http://127.0.0.1:51000") {
@@ -58,9 +81,33 @@ describe("SpyglassView", () => {
 
     expect(await screen.findByRole("alert")).toBeDefined();
     expect(screen.getByText("No Kiali service found in kind-local.")).toBeDefined();
+    // A non-auth error offers Retry but not the AWS-refresh action.
+    expect(screen.queryByText("Refresh AWS access")).toBeNull();
     fireEvent.click(screen.getByText("Retry"));
     await screen.findByTitle("Kiali — kind-local");
     expect(prepareMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers from expired credentials via Refresh AWS access", async () => {
+    // First prepare fails with an auth-shaped error; after SSO login it works.
+    prepareMock.mockResolvedValueOnce({
+      error: "building the cluster client timed out: the server has asked for the client to provide credentials",
+    });
+    prepareMock.mockResolvedValueOnce({ prep: EMBED });
+    ssoProfilesMock.mockResolvedValue({ profiles: [{ profile: "tusk-dev", contexts: ["tusk-dev"] }] });
+    profileForContextMock.mockReturnValue("tusk-dev");
+    ssoLoginMock.mockResolvedValue({ ok: true });
+
+    render(<SpyglassView tool="grafana" context="tusk-dev" source={{ mode: "auto" }} />);
+    expect(await screen.findByRole("alert")).toBeDefined();
+    // Auth errors surface the credential-refresh path.
+    const refresh = await screen.findByText("Refresh AWS access");
+    fireEvent.click(refresh);
+
+    await waitFor(() => expect(ssoLoginMock).toHaveBeenCalledWith("tusk-dev"));
+    await screen.findByTitle("Grafana — tusk-dev");
+    expect(prepareMock).toHaveBeenCalledTimes(2);
+    expect(notifyMock.success).toHaveBeenCalled();
   });
 
   it("explains external URLs and opens them in the browser", async () => {

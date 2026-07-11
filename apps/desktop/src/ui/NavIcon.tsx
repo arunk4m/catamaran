@@ -15,14 +15,17 @@ import {
   Gauge,
   GitBranch,
   HardDrive,
+  History,
   KeyRound,
   Layers3,
   LayoutDashboard,
   ListOrdered,
   Network,
+  Radio,
   RadioTower,
   Route,
   Scaling,
+  ScanEye,
   Server,
   ServerCog,
   Settings,
@@ -36,6 +39,7 @@ import {
   UserRoundCheck,
   UserRoundCog,
   Webhook,
+  Wind,
   type LucideIcon,
 } from "lucide-react";
 
@@ -82,6 +86,10 @@ const RESOURCE_ICONS: Record<string, LucideIcon> = {
   newresource: FilePlus2,
   kiali: Share2,
   grafana: Gauge,
+  airflow: Wind,
+  redpanda: Radio,
+  temporal: History,
+  tusklens: ScanEye,
 };
 
 export function iconForResourceKind(kind: string): LucideIcon {

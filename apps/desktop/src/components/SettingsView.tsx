@@ -884,7 +884,7 @@ export function SettingsView({
           {section === "observability" && (
             <SectionPanel
               title="Observability"
-              description="Kiali and Grafana open in dedicated Catamaran windows (both refuse in-app embedding). Auto-detect finds them in the focused cluster and holds a port-forward open; pin a service or URL to skip the lookup."
+              description="Kiali, Grafana, Airflow, Redpanda, Temporal and Tusk Lens embed as workspace tabs — Catamaran port-forwards each and relays past its frame blockers. Auto-detect finds them in the focused cluster; pin a service or an external URL per tool to skip the lookup."
             >
               <SpyglassSettings
                 config={observability}

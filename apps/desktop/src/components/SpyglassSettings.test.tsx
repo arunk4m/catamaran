@@ -31,19 +31,20 @@ beforeEach(() => {
 });
 
 describe("SpyglassSettings", () => {
-  it("renders both tools with auto-detect active by default", async () => {
+  it("renders every catalog tool with auto-detect active by default", async () => {
     render(
       <SpyglassSettings config={DEFAULT_OBSERVABILITY} onConfigChange={() => {}} activeContext="tusk-dev" />,
     );
     await waitFor(() => expect(screen.getByText("No spyglass port-forwards running.")).toBeDefined());
-    expect(screen.getByText("Kiali")).toBeDefined();
-    expect(screen.getByText("Grafana")).toBeDefined();
+    for (const label of ["Kiali", "Grafana", "Airflow", "Redpanda", "Temporal", "Tusk Lens"]) {
+      expect(screen.getByText(label)).toBeDefined();
+    }
     const groups = screen.getAllByRole("group");
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(6);
     const pressed = screen
       .getAllByRole("button", { pressed: true })
       .map((b) => b.textContent ?? "");
-    expect(pressed.filter((t) => t.includes("Auto-detect"))).toHaveLength(2);
+    expect(pressed.filter((t) => t.includes("Auto-detect"))).toHaveLength(6);
   });
 
   it("switches a tool to URL mode with a blank url", async () => {
@@ -53,13 +54,12 @@ describe("SpyglassSettings", () => {
     );
     const kialiGroup = screen.getByRole("group", { name: "Kiali source" });
     fireEvent.click(Array.from(kialiGroup.querySelectorAll("button")).find((b) => b.textContent?.includes("External URL"))!);
-    expect(onConfigChange).toHaveBeenCalledWith({
-      ...DEFAULT_OBSERVABILITY,
-      kiali: { mode: "url", url: "" },
-    });
+    expect(onConfigChange).toHaveBeenCalledWith(
+      expect.objectContaining({ kiali: { mode: "url", url: "" } }),
+    );
   });
 
-  it("detect pins discovered services and shows the ingress hint", async () => {
+  it("detect pins discovered services (incl. the newer tools) and shows the ingress hint", async () => {
     discoverMock.mockResolvedValue({
       tools: [
         {
@@ -70,6 +70,7 @@ describe("SpyglassSettings", () => {
           ingressUrl: "http://kiali.dev.example",
         },
         { tool: "grafana", namespace: "infra", service: "grafana", port: 80, ingressUrl: null },
+        { tool: "temporal", namespace: "temporal", service: "temporal-web", port: 8080, ingressUrl: null },
       ],
     });
     const onConfigChange = vi.fn();
@@ -79,10 +80,15 @@ describe("SpyglassSettings", () => {
     fireEvent.click(screen.getByText("Detect in tusk-dev"));
     await waitFor(() => expect(onConfigChange).toHaveBeenCalled());
     expect(discoverMock).toHaveBeenCalledWith("tusk-dev");
-    expect(onConfigChange).toHaveBeenCalledWith({
-      kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
-      grafana: { mode: "service", namespace: "infra", service: "grafana", port: 80 },
-    });
+    expect(onConfigChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
+        grafana: { mode: "service", namespace: "infra", service: "grafana", port: 80 },
+        temporal: { mode: "service", namespace: "temporal", service: "temporal-web", port: 8080 },
+        // Undetected tools keep their prior (auto) source.
+        airflow: { mode: "auto" },
+      }),
+    );
     expect(notifyMock.success).toHaveBeenCalled();
     expect(await screen.findByText("http://kiali.dev.example")).toBeDefined();
   });
@@ -131,8 +137,8 @@ describe("SpyglassSettings", () => {
     render(
       <SpyglassSettings
         config={{
+          ...DEFAULT_OBSERVABILITY,
           kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
-          grafana: { mode: "auto" },
         }}
         onConfigChange={onConfigChange}
         activeContext="tusk-dev"

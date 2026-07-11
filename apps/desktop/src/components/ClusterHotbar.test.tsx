@@ -114,7 +114,7 @@ describe("fleet indicators", () => {
 });
 
 describe("ClusterHotbar spyglass launchers", () => {
-  it("opens Kiali and Grafana through the spyglass handler", async () => {
+  it("opens tools from the observability menu", async () => {
     listContextsMock.mockResolvedValue({ contexts: [] });
     const onOpenSpyglass = vi.fn();
     render(
@@ -127,13 +127,21 @@ describe("ClusterHotbar spyglass launchers", () => {
         onOpenSpyglass={onOpenSpyglass}
       />,
     );
-    fireEvent.click(screen.getByLabelText("Open Kiali"));
+    // The launcher is a single popover; open it, then pick tools.
+    fireEvent.click(screen.getByLabelText("Open an observability tool"));
+    fireEvent.click(await screen.findByText("Kiali"));
     expect(onOpenSpyglass).toHaveBeenCalledWith("kiali");
-    fireEvent.click(screen.getByLabelText("Open Grafana"));
-    expect(onOpenSpyglass).toHaveBeenCalledWith("grafana");
+
+    fireEvent.click(screen.getByLabelText("Open an observability tool"));
+    fireEvent.click(await screen.findByText("Temporal"));
+    expect(onOpenSpyglass).toHaveBeenCalledWith("temporal");
+
+    fireEvent.click(screen.getByLabelText("Open an observability tool"));
+    fireEvent.click(await screen.findByText("Tusk Lens"));
+    expect(onOpenSpyglass).toHaveBeenCalledWith("tusklens");
   });
 
-  it("hides the launchers when no handler is wired", async () => {
+  it("hides the launcher when no handler is wired", async () => {
     listContextsMock.mockResolvedValue({ contexts: [] });
     render(
       <ClusterHotbar
@@ -144,7 +152,6 @@ describe("ClusterHotbar spyglass launchers", () => {
         onOpenSettings={() => {}}
       />,
     );
-    expect(screen.queryByLabelText("Open Kiali")).toBeNull();
-    expect(screen.queryByLabelText("Open Grafana")).toBeNull();
+    expect(screen.queryByLabelText("Open an observability tool")).toBeNull();
   });
 });

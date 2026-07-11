@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { Gauge, Moon, Settings, Share2, Sun } from "lucide-react";
+import { Moon, Settings, Sun, Telescope } from "lucide-react";
 import catamaranMark from "../assets/catamaran-mark.svg";
 import { listContexts, type ClusterContext } from "../lib/clusters";
 import {
   type Theme,
 } from "../ui";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { iconForResourceKind } from "../ui/NavIcon";
 import { ContextAvatar } from "./ContextAvatar";
 import {
   contextDisplayName,
   orderContexts,
+  SPYGLASS_CATALOG,
   type ContextProfiles,
   type SpyglassTool,
 } from "../lib/settings";
@@ -47,6 +50,7 @@ export function ClusterHotbar({
   openContexts?: string[];
 }) {
   const [contexts, setContexts] = useState<ClusterContext[]>([]);
+  const [spyglassMenuOpen, setSpyglassMenuOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -91,22 +95,45 @@ export function ClusterHotbar({
       <div className="cat-hotbar__actions">
         {onOpenSpyglass && (
           <>
-            <button
-              className="cat-hotbar__theme cat-hotbar__spyglass"
-              aria-label="Open Kiali"
-              title="Open Kiali (service mesh)"
-              onClick={() => onOpenSpyglass("kiali")}
-            >
-              <Share2 aria-hidden="true" />
-            </button>
-            <button
-              className="cat-hotbar__theme cat-hotbar__spyglass"
-              aria-label="Open Grafana"
-              title="Open Grafana (dashboards)"
-              onClick={() => onOpenSpyglass("grafana")}
-            >
-              <Gauge aria-hidden="true" />
-            </button>
+            <Popover open={spyglassMenuOpen} onOpenChange={setSpyglassMenuOpen}>
+              <PopoverTrigger
+                className="cat-hotbar__theme cat-hotbar__spyglass"
+                aria-label="Open an observability tool"
+                title="Observability — Kiali, Grafana, Airflow, Redpanda, Temporal, Tusk Lens"
+              >
+                <Telescope aria-hidden="true" />
+              </PopoverTrigger>
+              <PopoverContent side="right" align="end" className="w-60 p-0">
+                <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+                  Observability
+                </div>
+                <ul className="py-1">
+                  {SPYGLASS_CATALOG.map((tool) => {
+                    const Icon = iconForResourceKind(tool.id);
+                    return (
+                      <li key={tool.id}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                          onClick={() => {
+                            setSpyglassMenuOpen(false);
+                            onOpenSpyglass(tool.id);
+                          }}
+                        >
+                          <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{tool.label}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {tool.blurb}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </PopoverContent>
+            </Popover>
             <span className="cat-hotbar__actions-keel" aria-hidden="true" />
           </>
         )}

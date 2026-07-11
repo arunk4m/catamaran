@@ -241,7 +241,69 @@ export function saveAwsPortalUrl(url: string): void {
 const OBSERVABILITY_KEY = "catamaran.observability";
 
 /** The observability tools the spyglass can open. */
-export type SpyglassTool = "kiali" | "grafana";
+export type SpyglassTool = "kiali" | "grafana" | "airflow" | "redpanda" | "temporal" | "tusklens";
+
+/** Static metadata for a spyglass tool — the single source of truth. */
+export interface SpyglassToolMeta {
+  id: SpyglassTool;
+  label: string;
+  blurb: string;
+  /** True for the mesh graph tool (Kiali): opens on the animated traffic graph. */
+  mesh?: boolean;
+  /**
+   * Template used when a tool is pinned to a service in Settings (and shown as
+   * a hint). Auto-detect overrides these per cluster; they reflect how the
+   * tools ship on Tuskira EKS.
+   */
+  defaultTarget: { namespace: string; service: string; port: number };
+}
+
+/** Known tools in display order (mirrors the backend TOOL_CATALOG). */
+export const SPYGLASS_CATALOG: SpyglassToolMeta[] = [
+  {
+    id: "kiali",
+    label: "Kiali",
+    blurb: "Service mesh topology and traffic",
+    mesh: true,
+    defaultTarget: { namespace: "istio-system", service: "kiali", port: 20001 },
+  },
+  {
+    id: "grafana",
+    label: "Grafana",
+    blurb: "Metrics dashboards",
+    defaultTarget: { namespace: "infra", service: "grafana", port: 80 },
+  },
+  {
+    id: "airflow",
+    label: "Airflow",
+    blurb: "Workflow DAGs and runs",
+    defaultTarget: { namespace: "airflow", service: "airflow-webserver", port: 8080 },
+  },
+  {
+    id: "redpanda",
+    label: "Redpanda",
+    blurb: "Streaming topics and console",
+    defaultTarget: { namespace: "infra", service: "redpanda-console", port: 8080 },
+  },
+  {
+    id: "temporal",
+    label: "Temporal",
+    blurb: "Workflow executions",
+    defaultTarget: { namespace: "temporal", service: "temporal-web", port: 8080 },
+  },
+  {
+    id: "tusklens",
+    label: "Tusk Lens",
+    blurb: "Tusk observability",
+    defaultTarget: { namespace: "default", service: "tusk-lens-frontend", port: 3000 },
+  },
+];
+
+export const SPYGLASS_TOOL_IDS: SpyglassTool[] = SPYGLASS_CATALOG.map((t) => t.id);
+
+export function spyglassMeta(tool: SpyglassTool): SpyglassToolMeta {
+  return SPYGLASS_CATALOG.find((t) => t.id === tool) ?? SPYGLASS_CATALOG[0];
+}
 
 /**
  * Where a tool lives: `auto` discovers it in the focused cluster on open,
@@ -257,10 +319,9 @@ export type SpyglassSource = (
 
 export type ObservabilityConfig = Record<SpyglassTool, SpyglassSource>;
 
-export const DEFAULT_OBSERVABILITY: ObservabilityConfig = {
-  kiali: { mode: "auto" },
-  grafana: { mode: "auto" },
-};
+export const DEFAULT_OBSERVABILITY: ObservabilityConfig = Object.fromEntries(
+  SPYGLASS_TOOL_IDS.map((id) => [id, { mode: "auto" }]),
+) as ObservabilityConfig;
 
 /** A savable in-tool view: an absolute path (+ query/hash), never a full URL. */
 export function validSavedPath(value: unknown): value is string {
@@ -302,10 +363,9 @@ export function loadObservabilityConfig(): ObservabilityConfig {
     const raw = stored(OBSERVABILITY_KEY);
     if (!raw) return { ...DEFAULT_OBSERVABILITY };
     const value = JSON.parse(raw) as Partial<Record<SpyglassTool, unknown>>;
-    return {
-      kiali: sanitizeSource(value.kiali),
-      grafana: sanitizeSource(value.grafana),
-    };
+    return Object.fromEntries(
+      SPYGLASS_TOOL_IDS.map((id) => [id, sanitizeSource(value[id])]),
+    ) as ObservabilityConfig;
   } catch {
     return { ...DEFAULT_OBSERVABILITY };
   }

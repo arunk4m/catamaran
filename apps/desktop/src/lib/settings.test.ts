@@ -178,24 +178,34 @@ describe("AWS access portal", () => {
 });
 
 describe("observability (spyglass) config", () => {
-  it("defaults both tools to auto-detect", async () => {
-    const { loadObservabilityConfig } = await import("./settings");
-    expect(loadObservabilityConfig()).toEqual({
-      kiali: { mode: "auto" },
-      grafana: { mode: "auto" },
-    });
+  it("defaults every catalog tool to auto-detect", async () => {
+    const { loadObservabilityConfig, SPYGLASS_TOOL_IDS } = await import("./settings");
+    const cfg = loadObservabilityConfig();
+    expect(Object.keys(cfg).sort()).toEqual([...SPYGLASS_TOOL_IDS].sort());
+    for (const id of SPYGLASS_TOOL_IDS) {
+      expect(cfg[id]).toEqual({ mode: "auto" });
+    }
+    // The four newer tools are present alongside kiali/grafana.
+    expect(SPYGLASS_TOOL_IDS).toContain("airflow");
+    expect(SPYGLASS_TOOL_IDS).toContain("redpanda");
+    expect(SPYGLASS_TOOL_IDS).toContain("temporal");
+    expect(SPYGLASS_TOOL_IDS).toContain("tusklens");
   });
 
-  it("round-trips pinned services and URLs", async () => {
-    const { loadObservabilityConfig, saveObservabilityConfig } = await import("./settings");
+  it("round-trips pinned services and URLs per tool", async () => {
+    const { loadObservabilityConfig, saveObservabilityConfig, DEFAULT_OBSERVABILITY } =
+      await import("./settings");
     saveObservabilityConfig({
+      ...DEFAULT_OBSERVABILITY,
       kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
       grafana: { mode: "url", url: "https://grafana.example" },
+      temporal: { mode: "service", namespace: "temporal", service: "temporal-web", port: 8080 },
     });
-    expect(loadObservabilityConfig()).toEqual({
-      kiali: { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 },
-      grafana: { mode: "url", url: "https://grafana.example" },
-    });
+    const cfg = loadObservabilityConfig();
+    expect(cfg.kiali).toEqual({ mode: "service", namespace: "istio-system", service: "kiali", port: 20001 });
+    expect(cfg.grafana).toEqual({ mode: "url", url: "https://grafana.example" });
+    expect(cfg.temporal).toEqual({ mode: "service", namespace: "temporal", service: "temporal-web", port: 8080 });
+    expect(cfg.airflow).toEqual({ mode: "auto" });
   });
 
   it("round-trips and sanitizes saved views", async () => {

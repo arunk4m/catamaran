@@ -1,10 +1,20 @@
 import { invokeCapability, type Invoker } from "../transport/transport";
-import { validSavedPath, type SpyglassSource, type SpyglassTool } from "./settings";
+import {
+  spyglassMeta,
+  SPYGLASS_CATALOG,
+  validSavedPath,
+  type SpyglassSource,
+  type SpyglassTool,
+} from "./settings";
 
-export const SPYGLASS_LABELS: Record<SpyglassTool, string> = {
-  kiali: "Kiali",
-  grafana: "Grafana",
-};
+export const SPYGLASS_LABELS: Record<SpyglassTool, string> = Object.fromEntries(
+  SPYGLASS_CATALOG.map((t) => [t.id, t.label]),
+) as Record<SpyglassTool, string>;
+
+/** True for the mesh graph tool (Kiali) — the only tool with a special default view. */
+export function isMeshTool(tool: SpyglassTool): boolean {
+  return spyglassMeta(tool).mesh === true;
+}
 
 /** A tool found by `obs.discover`. */
 export interface DiscoveredTool {
@@ -246,11 +256,12 @@ export async function prepareEmbed(
     return { error: `Open a cluster first — ${label} is looked up in the focused context.` };
   }
 
+  const mesh = isMeshTool(tool);
   let target: { namespace: string; service: string; port: number };
   let meshNamespaces: string[] = [];
   if (source.mode === "service") {
     target = { namespace: source.namespace, service: source.service, port: source.port };
-    if (tool === "kiali") {
+    if (mesh) {
       const found = await discoverCached(context, invoke);
       meshNamespaces = found.meshNamespaces ?? [];
     }
@@ -278,17 +289,16 @@ export async function prepareEmbed(
     return { error: error ?? `Embed relay for ${target.service} failed to start.` };
   }
 
-  // Path prefix: kiali usually serves under /kiali (its web_root); fall back
-  // to the root for installs that serve at /.
+  // Kiali serves its UI under /kiali (its web_root); other tools serve at /.
   let prefix = "";
-  if (tool === "kiali") {
+  if (mesh) {
     const { probe } = await probeUrl(`${base}/kiali/`, invoke);
     prefix = probe?.ok && probe.status === 200 ? "/kiali" : "";
   }
-  const defaultPath = tool === "kiali" ? kialiDefaultPath(prefix, meshNamespaces) : "/";
+  const defaultPath = mesh ? kialiDefaultPath(prefix, meshNamespaces) : "/";
   const initialPath = validSavedPath(source.savedPath) ? source.savedPath : defaultPath;
 
-  const probe = await probeWithRetry(`${base}${tool === "kiali" ? `${prefix}/` : "/"}`, invoke);
+  const probe = await probeWithRetry(`${base}${mesh ? `${prefix}/` : "/"}`, invoke);
   if (probe && !probe.ok) {
     return {
       error: `${label} is relayed at ${base} but not answering: ${probe.error ?? "no response"}`,

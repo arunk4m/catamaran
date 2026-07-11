@@ -4,10 +4,8 @@ import {
   Braces,
   Columns2,
   FilePlus2,
-  Gauge,
   Link2,
   PanelRight,
-  Share2,
   SunMoon,
   type LucideIcon,
 } from "lucide-react";
@@ -26,6 +24,7 @@ import { listCrds, type CrdRef } from "../lib/crds";
 import { getRecents, pushRecent, recentId, type RecentItem } from "../lib/recents";
 import { rankItems } from "../lib/paletteRank";
 import { iconForResourceKind } from "../ui/NavIcon";
+import { SPYGLASS_CATALOG, type SpyglassTool } from "../lib/settings";
 
 /** Workspace-level commands the palette can run. */
 export interface PaletteActions {
@@ -38,8 +37,8 @@ export interface PaletteActions {
   onSwapPanes: () => void;
   onToggleTheme: () => void;
   onNewResource: () => void;
-  /** Open an observability tool window against the focused context. */
-  onOpenSpyglass?: (tool: "kiali" | "grafana") => void;
+  /** Open an observability tool against the focused context. */
+  onOpenSpyglass?: (tool: SpyglassTool) => void;
 }
 
 interface ActionItem {
@@ -104,22 +103,15 @@ function buildActions(actions: PaletteActions): ActionItem[] {
   }
   const openSpyglass = actions.onOpenSpyglass;
   if (openSpyglass) {
-    items.push(
-      {
-        id: "act:kiali",
-        label: "Open Kiali",
-        keywords: "kiali istio mesh traffic graph observability spyglass",
-        icon: Share2,
-        run: () => openSpyglass("kiali"),
-      },
-      {
-        id: "act:grafana",
-        label: "Open Grafana",
-        keywords: "grafana dashboards metrics charts observability spyglass",
-        icon: Gauge,
-        run: () => openSpyglass("grafana"),
-      },
-    );
+    for (const tool of SPYGLASS_CATALOG) {
+      items.push({
+        id: `act:${tool.id}`,
+        label: `Open ${tool.label}`,
+        keywords: `${tool.label} ${tool.blurb} observability spyglass tool`.toLowerCase(),
+        icon: iconForResourceKind(tool.id),
+        run: () => openSpyglass(tool.id),
+      });
+    }
   }
   return items;
 }

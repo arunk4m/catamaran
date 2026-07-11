@@ -3809,12 +3809,15 @@ body {
 /*
  * Keep-alive layer: an embedded spyglass tool that fills the body when its tab
  * is active, and stays mounted (display:none) when it isn't — so the iframe is
- * never torn down and reloaded on a tab switch or split toggle.
+ * never torn down and reloaded on a tab switch or split toggle. In-flow (not
+ * absolute) so it inherits the body's flex sizing reliably; only one is ever
+ * visible at a time, and the foreground content is omitted while one shows.
  */
 .cat-pane-keepalive {
-  position: absolute;
-  inset: 0;
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
 }
 .cat-pane-keepalive[hidden] {
   display: none;
@@ -4494,6 +4497,13 @@ button,
 .cat-spyglass-view__notice span {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.cat-spyglass-view__hint {
+  margin: 0;
+  color: var(--cat-color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .cat-spyglass-view__frame {
   flex: 1;

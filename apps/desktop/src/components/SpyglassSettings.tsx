@@ -11,9 +11,15 @@ import {
   type DiscoveredTool,
   type SpyglassForward,
 } from "../lib/spyglass";
-import type { ObservabilityConfig, SpyglassSource, SpyglassTool } from "../lib/settings";
+import {
+  spyglassMeta,
+  SPYGLASS_TOOL_IDS,
+  type ObservabilityConfig,
+  type SpyglassSource,
+  type SpyglassTool,
+} from "../lib/settings";
 
-const TOOLS: SpyglassTool[] = ["kiali", "grafana"];
+const TOOLS: SpyglassTool[] = SPYGLASS_TOOL_IDS;
 
 const MODE_CHOICES: Array<{ id: SpyglassSource["mode"]; label: string; description: string }> = [
   { id: "auto", label: "Auto-detect", description: "Find it in the focused cluster" },
@@ -33,9 +39,7 @@ function defaultForMode(
 ): SpyglassSource {
   const base: SpyglassSource =
     mode === "service"
-      ? tool === "kiali"
-        ? { mode: "service", namespace: "istio-system", service: "kiali", port: 20001 }
-        : { mode: "service", namespace: "", service: "grafana", port: 80 }
+      ? { mode: "service", ...spyglassMeta(tool).defaultTarget }
       : mode === "url"
         ? { mode: "url", url: "" }
         : { mode: "auto" };
@@ -96,9 +100,9 @@ export function SpyglassSettings({
     }
     if (hits > 0) {
       onConfigChange(next);
-      notify.success(`Found ${hits === 2 ? "Kiali and Grafana" : hits === 1 ? "one tool" : ""} in ${activeContext}`);
+      notify.success(`Found ${hits} observability ${hits === 1 ? "tool" : "tools"} in ${activeContext}`);
     } else {
-      notify.error(`No Kiali or Grafana services found in ${activeContext}`);
+      notify.error(`No known observability tools found in ${activeContext}`);
     }
   }
 
@@ -136,15 +140,13 @@ export function SpyglassSettings({
       </div>
 
       {TOOLS.map((tool) => {
-        const source = config[tool];
+        const source: SpyglassSource = config[tool] ?? { mode: "auto" };
         const hint = detected?.find((t) => t.tool === tool)?.ingressUrl ?? null;
         return (
           <div key={tool} className="cat-spyglass__tool">
             <span className="cat-spyglass__tool-name">
               <strong>{SPYGLASS_LABELS[tool]}</strong>
-              <small>
-                {tool === "kiali" ? "Service mesh topology and traffic" : "Metrics dashboards"}
-              </small>
+              <small>{spyglassMeta(tool).blurb}</small>
             </span>
             <div className="cat-settings-update__channels" role="group" aria-label={`${SPYGLASS_LABELS[tool]} source`}>
               {MODE_CHOICES.map(({ id, label, description }) => (

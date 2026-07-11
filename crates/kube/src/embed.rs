@@ -83,6 +83,57 @@ pub(crate) fn strip_embed_blockers(headers: &mut HeaderMap) {
         }
         None => {}
     }
+    sanitize_cookies_for_loopback(headers);
+}
+
+/// Make a tool's session cookies usable over the `http://127.0.0.1` relay.
+///
+/// Tools behind an HTTPS ingress (Grafana, Airflow, ...) set `Secure` session
+/// cookies and often `SameSite=None`. A browser refuses to store a `Secure`
+/// cookie from an `http://` origin, and `SameSite=None` requires `Secure` — so
+/// login "succeeds" upstream but the session cookie is dropped and the user
+/// bounces back to the login page. Since the relay is a private loopback hop
+/// carrying the user's own credentials, we relax those flags: drop `Secure`,
+/// downgrade `SameSite=None` to `Lax`, and drop any `Domain` (so the cookie is
+/// host-only for 127.0.0.1). This is what makes admin/basic login work embedded.
+pub(crate) fn rewrite_set_cookie(value: &str) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for attr in value.split(';') {
+        let trimmed = attr.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower == "secure" {
+            continue; // http loopback can't store Secure cookies
+        }
+        if lower.starts_with("domain=") {
+            continue; // host-only cookie binds to 127.0.0.1
+        }
+        if lower.starts_with("samesite=") && lower != "samesite=lax" && lower != "samesite=strict" {
+            kept.push("SameSite=Lax".to_string());
+            continue;
+        }
+        kept.push(trimmed.to_string());
+    }
+    kept.join("; ")
+}
+
+/// Rewrite every `Set-Cookie` header in place for the loopback relay.
+pub(crate) fn sanitize_cookies_for_loopback(headers: &mut HeaderMap) {
+    let rewritten: Vec<HeaderValue> = headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|c| HeaderValue::from_str(&rewrite_set_cookie(c)).ok())
+        .collect();
+    if rewritten.is_empty() {
+        return;
+    }
+    headers.remove("set-cookie");
+    for value in rewritten {
+        headers.append("set-cookie", value);
+    }
 }
 
 /// Insert the location reporter before `</body>` (case-insensitive),
@@ -437,6 +488,36 @@ mod header_tests {
         );
         // Unrelated hardening headers survive.
         assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+    }
+
+    #[test]
+    fn set_cookie_is_relaxed_for_loopback() {
+        // Grafana's shape: a Secure, SameSite=None session cookie from an HTTPS
+        // ingress — unusable over http loopback until relaxed.
+        assert_eq!(
+            rewrite_set_cookie("grafana_session=abc; Path=/; Secure; HttpOnly; SameSite=None"),
+            "grafana_session=abc; Path=/; HttpOnly; SameSite=Lax"
+        );
+        // Domain is dropped so the cookie binds to 127.0.0.1.
+        assert_eq!(
+            rewrite_set_cookie("s=1; Domain=grafana.example.com; Path=/; Secure"),
+            "s=1; Path=/"
+        );
+        // Lax/Strict and non-Secure cookies pass through untouched.
+        assert_eq!(
+            rewrite_set_cookie("s=1; Path=/; HttpOnly; SameSite=Lax"),
+            "s=1; Path=/; HttpOnly; SameSite=Lax"
+        );
+    }
+
+    #[test]
+    fn sanitize_cookies_rewrites_all_set_cookie_headers() {
+        let mut headers = HeaderMap::new();
+        headers.append("set-cookie", HeaderValue::from_static("a=1; Secure; SameSite=None"));
+        headers.append("set-cookie", HeaderValue::from_static("b=2; Secure"));
+        strip_embed_blockers(&mut headers);
+        let cookies: Vec<&str> = headers.get_all("set-cookie").iter().map(|v| v.to_str().unwrap()).collect();
+        assert_eq!(cookies, vec!["a=1; SameSite=Lax", "b=2"]);
     }
 
     #[test]

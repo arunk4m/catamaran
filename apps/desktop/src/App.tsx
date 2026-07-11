@@ -53,6 +53,7 @@ import {
   saveDeckLayout,
   type ObservabilityConfig,
   type SpyglassTool,
+  SPYGLASS_TOOL_IDS,
 } from "./lib/settings";
 import { SPYGLASS_LABELS } from "./lib/spyglass";
 import { SpyglassView } from "./components/SpyglassView";
@@ -104,8 +105,8 @@ function activeTabOf(pane: AppPane | null): ViewTab | null {
 
 /** Kinds that make sense to mirror across linked panes. */
 /** The embedded observability tools — kept alive in their own pane layer. */
-function isSpyglassKind(kind: ResourceKind): boolean {
-  return kind === "kiali" || kind === "grafana";
+function isSpyglassKind(kind: ResourceKind): kind is SpyglassTool {
+  return (SPYGLASS_TOOL_IDS as string[]).includes(kind);
 }
 
 function isMirrorableKind(kind: ResourceKind): boolean {

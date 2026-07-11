@@ -27,8 +27,62 @@ use crate::client_cache::ClientCache;
 use crate::connect::request_timeout;
 use crate::forward;
 
-/// Tools the spyglass knows how to find.
-pub const SPYGLASS_TOOLS: [&str; 2] = ["kiali", "grafana"];
+/// A tool the spyglass knows how to find and embed.
+pub struct ToolSpec {
+    /// Stable id — used as the capability tool name and UI key.
+    pub name: &'static str,
+    /// Service names that identify this tool's UI (checked as exact matches,
+    /// most-specific first). Deliberately the real UI service, never the
+    /// oauth2-proxy that may front it — the relay reaches the UI directly.
+    pub services: &'static [&'static str],
+    /// Preferred UI port numbers, most-specific first.
+    pub ports: &'static [i32],
+    /// Whether the tool is part of the Istio mesh graph story (Kiali only) —
+    /// discovery attaches mesh namespaces when any such tool is present.
+    pub mesh: bool,
+}
+
+/// The known observability tools, in display order. Ports and service names
+/// come from how these actually ship on Tuskira EKS (see the ingresses in
+/// `default`/`infra`/`airflow`/`temporal`).
+pub const TOOL_CATALOG: &[ToolSpec] = &[
+    ToolSpec { name: "kiali", services: &["kiali"], ports: &[20001], mesh: true },
+    ToolSpec { name: "grafana", services: &["grafana"], ports: &[3000, 80, 8080], mesh: false },
+    ToolSpec {
+        name: "airflow",
+        services: &["airflow-webserver", "airflow-web", "airflow"],
+        ports: &[8080],
+        mesh: false,
+    },
+    ToolSpec {
+        name: "redpanda",
+        // The console UI — NOT redpanda-oauth2-proxy (the disguise guard drops that).
+        services: &["redpanda-console", "console"],
+        ports: &[8080],
+        mesh: false,
+    },
+    ToolSpec {
+        name: "temporal",
+        services: &["temporal-web", "temporal-ui"],
+        ports: &[8080, 8088],
+        mesh: false,
+    },
+    ToolSpec {
+        name: "tusklens",
+        services: &["tusk-lens-frontend", "tusk-lens"],
+        ports: &[3000],
+        mesh: false,
+    },
+];
+
+/// Every tool id, in catalog order.
+pub fn tool_names() -> Vec<&'static str> {
+    TOOL_CATALOG.iter().map(|t| t.name).collect()
+}
+
+fn spec_for(tool: &str) -> Option<&'static ToolSpec> {
+    TOOL_CATALOG.iter().find(|t| t.name == tool)
+}
 
 /// Page size for the discovery walks (services, ingresses).
 const DISCOVER_PAGE_SIZE: u32 = 200;
@@ -36,34 +90,39 @@ const DISCOVER_PAGE_SIZE: u32 = 200;
 /// Upper bound for one URL probe (connect + TLS + first response).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 
-/// Classify a Service as a spyglass tool by exact name or well-known labels.
+/// Classify a Service as a spyglass tool by known service name or well-known
+/// labels.
 ///
-/// Label matches are guarded against look-alikes that carry a tool's labels
-/// or name fragment without being the tool itself (oauth2 proxies fronting
-/// it, `grafana-agent-operator`, `grafana-mcp-server`, ...): only an exact
-/// service name skips the guard.
+/// An exact catalog service name always wins. Otherwise, look-alikes that
+/// carry a tool's fragment without being the UI itself — oauth2 proxies
+/// fronting it, `grafana-agent-operator`, `grafana-mcp-server`,
+/// `redpanda-oauth2-proxy` — are dropped before the label fallback.
 pub(crate) fn classify_service(
     name: &str,
     labels: &std::collections::BTreeMap<String, String>,
 ) -> Option<&'static str> {
-    for tool in SPYGLASS_TOOLS {
-        if name == tool {
-            return Some(tool);
+    for spec in TOOL_CATALOG {
+        if spec.services.iter().any(|svc| name == *svc) {
+            return Some(spec.name);
         }
     }
     let lower = name.to_ascii_lowercase();
-    let disguised = ["oauth", "proxy", "operator", "agent", "mcp"]
+    // These fragments mark non-UI or fronting services that may still carry a
+    // tool's `app` label (e.g. `temporal-frontend` is the gRPC endpoint, not
+    // the web UI). A tool whose real UI service uses one of these words —
+    // `tusk-lens-frontend` — is matched by exact name above, before this guard.
+    let disguised = ["oauth", "proxy", "operator", "agent", "mcp", "headless", "admintools", "frontend"]
         .iter()
         .any(|fragment| lower.contains(fragment));
     if disguised {
         return None;
     }
-    for tool in SPYGLASS_TOOLS {
+    for spec in TOOL_CATALOG {
         let labeled = ["app.kubernetes.io/name", "app"]
             .iter()
-            .any(|key| labels.get(*key).map(String::as_str) == Some(tool));
+            .any(|key| labels.get(*key).map(String::as_str) == Some(spec.name));
         if labeled {
-            return Some(tool);
+            return Some(spec.name);
         }
     }
     None
@@ -72,11 +131,7 @@ pub(crate) fn classify_service(
 /// Pick the port to reach a tool's UI on: its well-known port numbers first,
 /// then an http-ish port name, then the first declared port.
 pub(crate) fn preferred_port<'a>(tool: &str, ports: &'a [ServicePort]) -> Option<&'a ServicePort> {
-    let known: &[i32] = match tool {
-        "kiali" => &[20001],
-        "grafana" => &[3000, 80, 8080],
-        _ => &[],
-    };
+    let known: &[i32] = spec_for(tool).map(|s| s.ports).unwrap_or(&[]);
     for number in known {
         if let Some(sp) = ports.iter().find(|sp| sp.port == *number) {
             return Some(sp);
@@ -182,25 +237,44 @@ fn handler_err<E: std::fmt::Display>(e: E) -> CapabilityError {
     CapabilityError::Handler(e.to_string())
 }
 
-/// Stable discovery order: kiali before grafana; within a tool the exact-name
-/// service outranks label-matched extras (a cluster can host several grafanas
-/// — `grafana` in infra must beat `fedsoc-grafana` for the auto-open pick),
-/// then namespace for determinism.
+/// This tool's position in the catalog (unknown tools sort last).
+fn catalog_rank(tool: &str) -> usize {
+    TOOL_CATALOG
+        .iter()
+        .position(|t| t.name == tool)
+        .unwrap_or(usize::MAX)
+}
+
+/// Whether `service` is the tool's primary (canonical) service name — the
+/// first catalog candidate — so it outranks label-matched or aliased extras
+/// (a cluster can host several grafanas; `grafana` in infra must beat
+/// `fedsoc-grafana` for the auto-open pick).
+fn is_primary_service(tool: &str, service: &str) -> bool {
+    spec_for(tool)
+        .and_then(|s| s.services.first())
+        .is_some_and(|primary| service == *primary)
+}
+
+/// Stable discovery order: by catalog order; within a tool the primary service
+/// name outranks aliases/extras, then namespace for determinism.
 pub(crate) fn sort_tools(tools: &mut [DiscoveredTool]) {
     tools.sort_by(|a, b| {
-        a.tool
-            .cmp(&b.tool)
-            .reverse()
-            .then((a.service != a.tool).cmp(&(b.service != b.tool)))
+        catalog_rank(&a.tool)
+            .cmp(&catalog_rank(&b.tool))
+            .then(
+                (!is_primary_service(&a.tool, &a.service))
+                    .cmp(&!is_primary_service(&b.tool, &b.service)),
+            )
             .then(a.namespace.cmp(&b.namespace))
     });
 }
 
-/// `obs.discover` — find observability tools (Kiali, Grafana) in a cluster.
+/// `obs.discover` — find observability tools in a cluster (Kiali, Grafana,
+/// Airflow, Redpanda, Temporal, Tusk Lens).
 pub fn discover_capability(cache: Arc<ClientCache>) -> Capability {
     Capability::typed::<DiscoverIn, DiscoverOut, _, _>(
         "obs.discover",
-        "find observability tools (kiali, grafana) in a connected kube context: their service, UI port and ingress URL",
+        "find observability tools (kiali, grafana, airflow, redpanda, temporal, tusk-lens) in a connected kube context: their service, UI port, ingress URL, and the mesh namespaces",
         Annotations::READ_ONLY,
         move |input: DiscoverIn| {
             let cache = cache.clone();
@@ -283,7 +357,10 @@ pub fn discover_capability(cache: Arc<ClientCache>) -> Capability {
 
                     // Pass 3: mesh namespaces — what Kiali's graph opens on.
                     let mut mesh_namespaces: Vec<String> = Vec::new();
-                    if found.iter().any(|t| t.tool == "kiali") {
+                    let wants_mesh = found
+                        .iter()
+                        .any(|t| spec_for(&t.tool).is_some_and(|s| s.mesh));
+                    if wants_mesh {
                         let ns_api: Api<Namespace> = Api::all(client.clone());
                         let mut continue_token: Option<String> = None;
                         loop {
@@ -715,6 +792,63 @@ mod classify_tests {
             classify_service("grafana-mcp-server", &labels(&[("app", "grafana")])),
             None
         );
+    }
+
+    #[test]
+    fn the_tuskira_dev_tools_classify_by_service_name() {
+        // Real service names from dev EKS: the UI service, never its oauth2-proxy.
+        assert_eq!(classify_service("airflow-webserver", &labels(&[])), Some("airflow"));
+        assert_eq!(classify_service("redpanda-console", &labels(&[])), Some("redpanda"));
+        assert_eq!(classify_service("temporal-web", &labels(&[])), Some("temporal"));
+        assert_eq!(classify_service("tusk-lens-frontend", &labels(&[])), Some("tusklens"));
+
+        // The oauth2 proxies fronting redpanda/temporal are dropped.
+        assert_eq!(classify_service("redpanda-oauth2-proxy", &labels(&[])), None);
+        assert_eq!(classify_service("temporal-oauth2-proxy", &labels(&[])), None);
+        // Temporal's non-UI services must not be mistaken for the web UI —
+        // even though they carry the temporal `app` label.
+        assert_eq!(
+            classify_service("temporal-frontend", &labels(&[("app.kubernetes.io/name", "temporal")])),
+            None
+        );
+        assert_eq!(classify_service("temporal-frontend-headless", &labels(&[])), None);
+        assert_eq!(classify_service("temporal-admintools", &labels(&[])), None);
+        // The tusk-lens backend API is not the UI — but the frontend, an
+        // exact catalog match, is (the `frontend` guard must not drop it).
+        assert_eq!(classify_service("tusk-lens-backend", &labels(&[])), None);
+        assert_eq!(classify_service("tusk-lens-frontend", &labels(&[])), Some("tusklens"));
+    }
+
+    #[test]
+    fn preferred_ports_for_new_tools() {
+        assert_eq!(preferred_port("airflow", &[port(8080, Some("airflow-ui"))]).unwrap().port, 8080);
+        assert_eq!(preferred_port("redpanda", &[port(8080, Some("http"))]).unwrap().port, 8080);
+        assert_eq!(preferred_port("temporal", &[port(8080, None)]).unwrap().port, 8080);
+        assert_eq!(preferred_port("tusklens", &[port(3000, None)]).unwrap().port, 3000);
+    }
+
+    #[test]
+    fn catalog_order_is_stable_across_all_tools() {
+        let row = |tool: &str, service: &str| DiscoveredTool {
+            tool: tool.into(),
+            namespace: "ns".into(),
+            service: service.into(),
+            port: 80,
+            port_name: None,
+            ingress_url: None,
+        };
+        // Deliberately shuffled input.
+        let mut tools = vec![
+            row("tusklens", "tusk-lens-frontend"),
+            row("grafana", "grafana"),
+            row("temporal", "temporal-web"),
+            row("kiali", "kiali"),
+            row("redpanda", "redpanda-console"),
+            row("airflow", "airflow-webserver"),
+        ];
+        sort_tools(&mut tools);
+        let order: Vec<&str> = tools.iter().map(|t| t.tool.as_str()).collect();
+        assert_eq!(order, tool_names());
     }
 
     fn port(number: i32, name: Option<&str>) -> ServicePort {
