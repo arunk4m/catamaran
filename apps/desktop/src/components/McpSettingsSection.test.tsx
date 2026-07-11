@@ -20,7 +20,7 @@ beforeEach(() => {
   localStorage.clear();
   Object.values(mcp).forEach((m) => m.mockReset());
   mcp.mcpHttpStatus.mockResolvedValue(null);
-  mcp.catamaranCliStatus.mockResolvedValue({ installed: false, path: "/usr/local/bin/catamaran", links_to: null });
+  mcp.catamaranCliStatus.mockResolvedValue({ installed: false, path: "/Users/arun/.local/bin/catamaran", links_to: null, on_path: true });
 });
 
 describe("McpSettingsSection", () => {
@@ -42,7 +42,7 @@ describe("McpSettingsSection", () => {
 
   it("installs the catamaran CLI", async () => {
     mcp.installCatamaranCli.mockResolvedValue("/usr/local/bin/catamaran");
-    mcp.catamaranCliStatus.mockResolvedValue({ installed: true, path: "/usr/local/bin/catamaran", links_to: "/x" });
+    mcp.catamaranCliStatus.mockResolvedValue({ installed: true, path: "/Users/arun/.local/bin/catamaran", links_to: "/x", on_path: true });
     render(<McpSettingsSection />);
     fireEvent.click(screen.getByRole("button", { name: /Install catamaran CLI/ }));
     await waitFor(() => expect(mcp.installCatamaranCli).toHaveBeenCalled());

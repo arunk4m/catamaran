@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { RESOURCE_LABELS, type ResourceKind } from "./ResourceBrowser";
 import { CustomResourceGroup } from "./CustomResourceGroup";
+import { CuratedCrdGroup } from "./CuratedCrdGroup";
 import { iconForResourceKind, NavIcon } from "../ui/NavIcon";
 import { cn } from "@/lib/utils";
 import type { CrdRef } from "../lib/crds";
@@ -39,6 +40,16 @@ const NAV_SECTIONS: Array<{ heading: string; kinds: ResourceKind[] }> = [
     kinds: ["serviceaccounts", "clusterroles", "roles", "clusterrolebindings", "rolebindings"],
   },
   { heading: "Helm", kinds: ["helmreleases"] },
+];
+
+/**
+ * Curated operator groups rendered right after Workloads: their CRDs
+ * (KEDA autoscaling, Karpenter node provisioning) are surfaced as first-class
+ * entries rather than buried in the generic Custom Resources tree.
+ */
+const CURATED_GROUPS: Array<{ heading: string; groups: string[] }> = [
+  { heading: "KEDA", groups: ["keda.sh"] },
+  { heading: "Karpenter", groups: ["karpenter.sh", "karpenter.k8s.aws"] },
 ];
 
 /** A rotating chevron disclosure indicator. */
@@ -204,6 +215,28 @@ export function Sidebar({
                           </button>
                         );
                       })}
+                    {/* Curated operator CRDs (KEDA, Karpenter) live under Workloads. */}
+                    {open &&
+                      section.heading === "Workloads" &&
+                      CURATED_GROUPS.map((curated) => (
+                        <CuratedCrdGroup
+                          key={curated.heading}
+                          cluster={cluster}
+                          groups={curated.groups}
+                          open={false}
+                          activeCrd={cluster === activeCluster ? activeCrd : null}
+                          onSelectCrd={(crd) => onSelectCrd(cluster, crd)}
+                          renderTrigger={(triggerOpen, onToggle) => (
+                            <TreeRow
+                              open={triggerOpen}
+                              onToggle={onToggle}
+                              className="cat-sidebar__group-row pl-6 text-muted-foreground"
+                            >
+                              <span className="truncate">{curated.heading}</span>
+                            </TreeRow>
+                          )}
+                        />
+                      ))}
                   </React.Fragment>
                 );
               })}

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Braces, ChevronRight } from "lucide-react";
-import { listCrds, type CrdRef } from "../lib/crds";
+import { listCrds, listCrdsCached, type CrdRef } from "../lib/crds";
 import { cn } from "@/lib/utils";
 
 /**
@@ -23,6 +23,8 @@ export function CustomResourceGroup({
   renderTrigger: (open: boolean, onToggle: () => void) => React.ReactNode;
   listCrdsFn?: typeof listCrds;
 }) {
+  // Share the per-context discovery with the curated KEDA/Karpenter groups.
+  const load = listCrdsFn === listCrds ? listCrdsCached : listCrdsFn;
   const [crds, setCrds] = useState<CrdRef[] | null>(null);
   const [error, setError] = useState("");
   const [openApiGroups, setOpenApiGroups] = useState<Record<string, boolean>>({});
@@ -33,7 +35,7 @@ export function CustomResourceGroup({
   useEffect(() => {
     if (!localOpen || crds !== null) return; // load once, when first opened
     let active = true;
-    void listCrdsFn(cluster).then((out) => {
+    void load(cluster).then((out) => {
       if (!active) return;
       if (out.error) setError(out.error);
       else setCrds(out.crds ?? []);
@@ -41,7 +43,7 @@ export function CustomResourceGroup({
     return () => {
       active = false;
     };
-  }, [localOpen, cluster, crds, listCrdsFn]);
+  }, [localOpen, cluster, crds, load]);
 
   const byGroup = useMemo(() => {
     const m = new Map<string, CrdRef[]>();

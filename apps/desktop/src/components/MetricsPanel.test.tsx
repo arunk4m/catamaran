@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
 import { MetricsPanel } from "./MetricsPanel";
 
@@ -55,5 +55,32 @@ describe("MetricsPanel", () => {
       />,
     );
     await waitFor(() => expect(screen.getByText(/No metrics available/)).toBeDefined());
+  });
+
+  it("offers a time-range picker that re-polls at the new window", async () => {
+    const podMetricsFn = vi.fn().mockResolvedValue({
+      metrics: [{ name: "web-1", namespace: "default", cpuMillicores: 250, memoryMiB: 64 }],
+    });
+    render(
+      <MetricsPanel
+        kind="Pod"
+        context="kind-dev"
+        namespace="default"
+        name="web-1"
+        intervalMs={100000}
+        podMetricsFn={podMetricsFn}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("0.250 cores")).toBeDefined());
+    // Defaults to the 5m window.
+    expect(screen.getByText(/last 5m/)).toBeDefined();
+    const group = screen.getByRole("group", { name: "Metrics time range" });
+    expect(group.querySelector('[aria-pressed="true"]')?.textContent).toBe("5m");
+
+    // Switching to 1h re-samples (effect re-runs) and updates the label.
+    podMetricsFn.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "1h" }));
+    await waitFor(() => expect(screen.getByText(/last 1h/)).toBeDefined());
+    expect(podMetricsFn).toHaveBeenCalled();
   });
 });
