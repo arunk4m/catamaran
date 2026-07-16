@@ -48,8 +48,20 @@ import {
   loadDeckLayout,
   loadAwsPortalUrl,
   saveAwsPortalUrl,
+  loadObservabilityConfig,
+  saveObservabilityConfig,
+  loadCustomTools,
+  saveCustomTools,
+  loadHiddenTools,
+  saveHiddenTools,
+  findSpyglassTool,
+  resolveSpyglassTools,
+  spyglassSourceFor,
   saveDeckLayout,
+  type ObservabilityConfig,
+  type CustomSpyglassTool,
 } from "./lib/settings";
+import { SpyglassView } from "./components/SpyglassView";
 import {
   createDeck,
   splitDeck,
@@ -77,6 +89,8 @@ interface ViewTab {
   kind: ResourceKind;
   /** Present when the tab is a custom-resource (CRD) view. */
   crd?: CrdRef;
+  /** For a `spyglass` tab: which observability tool it embeds (built-in or custom id). */
+  spyglassToolId?: string;
   /** Deep-link target from global search (opens the resource's detail). */
   focus?: { name: string; namespace: string | null; nonce: number };
   /** For a "new resource" tab: the template kind to start from. */
@@ -96,9 +110,18 @@ function activeTabOf(pane: AppPane | null): ViewTab | null {
   return pane.tabs.find((t) => t.id === pane.activeTabId) ?? null;
 }
 
-/** Kinds that make sense to mirror across linked panes. */
+/** The embedded observability tools — kept alive in their own pane layer. */
+function isSpyglassKind(kind: ResourceKind): boolean {
+  return kind === "spyglass";
+}
+
 function isMirrorableKind(kind: ResourceKind): boolean {
-  return kind !== "settings" && kind !== "newresource" && kind !== "editresource";
+  return (
+    kind !== "settings" &&
+    kind !== "newresource" &&
+    kind !== "editresource" &&
+    !isSpyglassKind(kind)
+  );
 }
 
 export function App() {
@@ -131,6 +154,24 @@ export function App() {
   function changeAwsPortalUrl(url: string) {
     setAwsPortalUrl(url);
     saveAwsPortalUrl(url);
+  }
+  // Where the built-in tools live (per-tool spyglass source).
+  const [observability, setObservability] = useState<ObservabilityConfig>(loadObservabilityConfig);
+  function changeObservability(config: ObservabilityConfig) {
+    setObservability(config);
+    saveObservabilityConfig(config);
+  }
+  // User-added observability tools (pinned service + icon).
+  const [customTools, setCustomTools] = useState<CustomSpyglassTool[]>(loadCustomTools);
+  function changeCustomTools(tools: CustomSpyglassTool[]) {
+    setCustomTools(tools);
+    saveCustomTools(tools);
+  }
+  // Built-in tools the user has hidden from the launcher/palette.
+  const [hiddenTools, setHiddenTools] = useState<string[]>(loadHiddenTools);
+  function changeHiddenTools(ids: string[]) {
+    setHiddenTools(ids);
+    saveHiddenTools(ids);
   }
   const dockIdRef = useRef(1);
   const focusNonce = useRef(0);
@@ -310,6 +351,66 @@ export function App() {
   const activeTab = activeTabOf(pane);
   const activeCluster = activeTab?.cluster ?? null;
   const activeKind: ResourceKind = activeTab?.kind ?? "pods";
+  // Visible built-in + user-added observability tools, for launcher and palette.
+  const spyglassTools = resolveSpyglassTools(customTools, hiddenTools);
+
+  /**
+   * Open (or focus) the singleton workspace tab for a spyglass tool (built-in
+   * or custom). The tab always targets the focused cluster; re-opening from
+   * another cluster retargets it instead of stacking a second copy.
+   */
+  function openSpyglass(toolId: string) {
+    const cluster = activeCluster;
+    const meta = findSpyglassTool(toolId, customTools);
+    if (!cluster) {
+      notify.error(
+        `Open a cluster first`,
+        `${meta?.label ?? "This tool"} is looked up in the focused context.`,
+      );
+      return;
+    }
+    setDeck((d) => {
+      for (const p of d.panes) {
+        const existing = p.tabs.find((t) => t.kind === "spyglass" && t.spyglassToolId === toolId);
+        if (existing) {
+          return focusPane(
+            updatePane(d, p.id, (x) => ({
+              ...x,
+              activeTabId: existing.id,
+              tabs: x.tabs.map((t) => (t.id === existing.id ? { ...t, cluster } : t)),
+            })),
+            p.id,
+          );
+        }
+      }
+      const id = tabIdRef.current++;
+      return focusPane(
+        updatePane(d, d.focusedPaneId, (p) => ({
+          ...p,
+          tabs: [...p.tabs, { id, cluster, kind: "spyglass" as ResourceKind, spyglassToolId: toolId }],
+          activeTabId: id,
+        })),
+        d.focusedPaneId,
+      );
+    });
+  }
+
+  /** Persist (or clear) a spyglass tool's saved in-tool view. */
+  function saveSpyglassView(toolId: string, path: string | null) {
+    const custom = customTools.find((t) => t.id === toolId);
+    if (custom) {
+      changeCustomTools(
+        customTools.map((t) =>
+          t.id === toolId ? { ...t, savedPath: path ?? undefined } : t,
+        ),
+      );
+      return;
+    }
+    const source = { ...(observability[toolId] ?? { mode: "auto" as const }) };
+    if (path) source.savedPath = path;
+    else delete source.savedPath;
+    changeObservability({ ...observability, [toolId]: source });
+  }
   // Every cluster with an open tab, across both panes (drives the sidebar tree).
   const clusters = orderContexts(
     [...new Set(deck.panes.flatMap((p) => p.tabs.flatMap((t) => (t.cluster ? [t.cluster] : []))))].map(
@@ -337,20 +438,38 @@ export function App() {
       openSettings();
       return;
     }
-    const paneId = target?.paneId ?? deck.focusedPaneId;
+    let paneId = target?.paneId ?? deck.focusedPaneId;
+    // Locked spyglass panes: a Kiali/Grafana view is never replaced by sidebar
+    // or palette navigation. When such a pane is focused and the deck is split,
+    // the resource opens in the OTHER pane instead of hijacking the tool; the
+    // spyglass tab only closes when the user closes it. (Explicit paneId
+    // targets — e.g. an in-pane drill-down — are honored as-is.)
+    if (target?.paneId == null) {
+      const focused = deck.panes.find((p) => p.id === paneId);
+      const focusedActive = focused ? activeTabOf(focused) : null;
+      if (focusedActive && isSpyglassKind(focusedActive.kind)) {
+        const other = otherPane(deck, paneId);
+        if (other) paneId = other.id;
+      }
+    }
+    const routedPaneId = paneId;
     setDeck((d) => {
-      let next = openViewOn(d, paneId, cluster, kind);
-      next = focusPane(next, paneId);
-      // Linked cruising: the other pane follows onto the same kind.
+      let next = openViewOn(d, routedPaneId, cluster, kind);
+      next = focusPane(next, routedPaneId);
+      // Linked cruising: the other pane follows onto the same kind — but never
+      // onto a pane locked on a spyglass tool.
       if (next.linked && isSplit(next) && isMirrorableKind(kind)) {
-        const other = otherPane(next, paneId);
-        const otherCluster =
-          activeTabOf(other)?.cluster ?? other?.tabs.find((t) => t.cluster)?.cluster ?? null;
-        if (other && otherCluster) next = openViewOn(next, other.id, otherCluster, kind);
+        const other = otherPane(next, routedPaneId);
+        const otherActive = other ? activeTabOf(other) : null;
+        if (other && !(otherActive && isSpyglassKind(otherActive.kind))) {
+          const otherCluster =
+            otherActive?.cluster ?? other.tabs.find((t) => t.cluster)?.cluster ?? null;
+          if (otherCluster) next = openViewOn(next, other.id, otherCluster, kind);
+        }
       }
       return next;
     });
-    setPaneQuery((q) => ({ ...q, [paneId]: "" }));
+    setPaneQuery((q) => ({ ...q, [routedPaneId]: "" }));
   }
 
   /** Open the single workspace-level Settings tab, optionally at a section. */
@@ -638,13 +757,19 @@ export function App() {
     const query = paneQuery[p.id] ?? "";
     const setQuery = (q: string) => setPaneQuery((m) => ({ ...m, [p.id]: q }));
 
+    const kindLabel = (t: ViewTab) =>
+      t.crd
+        ? t.crd.kind
+        : t.kind === "spyglass"
+          ? findSpyglassTool(t.spyglassToolId ?? "", customTools)?.label ?? "Observability"
+          : RESOURCE_LABELS[t.kind];
     const tabDescriptors: TabDescriptor[] = p.tabs.map((t) => ({
       id: t.id,
       label: t.edit
         ? `edit: ${t.edit.kind}/${t.edit.name}`
         : t.cluster
-          ? `${t.crd ? t.crd.kind : RESOURCE_LABELS[t.kind]} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
-          : RESOURCE_LABELS[t.kind],
+          ? `${kindLabel(t)} · ${contextDisplayName(t.cluster, contextProfiles[t.cluster])}`
+          : kindLabel(t),
     }));
 
     return (
@@ -727,8 +852,36 @@ export function App() {
             />
             {paneActiveTab && (
               <>
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-                  {paneKind === "settings" ? (
+                <div className="cat-pane-body">
+                  {/*
+                   * Keep-alive layer: every open Kiali/Grafana tab in this pane
+                   * stays mounted (just hidden when not active), so switching
+                   * tabs or splitting the deck never reloads the heavy embedded
+                   * tool — it's already warm. The foreground content below is
+                   * rendered only when the active tab is NOT a spyglass tool.
+                   */}
+                  {p.tabs.map((t) => {
+                    if (t.kind !== "spyglass" || !t.cluster || !t.spyglassToolId) return null;
+                    const meta = findSpyglassTool(t.spyglassToolId, customTools);
+                    if (!meta) return null;
+                    return (
+                      <div
+                        key={`spyglass-${t.id}`}
+                        className="cat-pane-keepalive"
+                        hidden={t.id !== p.activeTabId}
+                      >
+                        <SpyglassView
+                          meta={meta}
+                          context={t.cluster}
+                          active={t.id === p.activeTabId}
+                          source={spyglassSourceFor(t.spyglassToolId, observability, customTools)}
+                          onSaveView={(path) => saveSpyglassView(t.spyglassToolId!, path)}
+                          onOpenSettings={() => openSettings("observability")}
+                        />
+                      </div>
+                    );
+                  })}
+                  {isSpyglassKind(paneKind) ? null : paneKind === "settings" ? (
                     <SettingsView
                       key={`${paneActiveTab.id}:${settingsSectionNonce}`}
                       initialSection={settingsInitialSection}
@@ -747,6 +900,13 @@ export function App() {
                       onContextOrderChange={changeContextOrder}
                       awsPortalUrl={awsPortalUrl}
                       onAwsPortalUrlChange={changeAwsPortalUrl}
+                      observability={observability}
+                      onObservabilityChange={changeObservability}
+                      customTools={customTools}
+                      onCustomToolsChange={changeCustomTools}
+                      hiddenTools={hiddenTools}
+                      onHiddenToolsChange={changeHiddenTools}
+                      activeContext={activeCluster}
                     />
                   ) : paneActiveTab.crd && paneCluster ? (
                     <CustomResourceBrowser
@@ -863,6 +1023,8 @@ export function App() {
         theme={theme}
         onToggleTheme={toggleThemeMode}
         onOpenSettings={openSettings}
+        onOpenSpyglass={openSpyglass}
+        spyglassTools={spyglassTools}
         contextProfiles={contextProfiles}
         kubeconfigFiles={kubeconfigFiles}
         contextOrder={contextOrder}
@@ -882,9 +1044,15 @@ export function App() {
         />
       )}
       <div className="cat-main">
-        {split ? (
-          <div className="cat-deck" ref={deckElRef}>
-            {renderPane(deck.panes[0], 0)}
+        {/*
+         * The deck wrapper is ALWAYS rendered (even single-pane) so the port
+         * pane keeps the same DOM parent when the deck splits — otherwise an
+         * embedded Kiali/Grafana iframe would reload every time you toggle the
+         * split. Splitting just appends the divider and starboard pane.
+         */}
+        <div className="cat-deck" ref={deckElRef}>
+          {renderPane(deck.panes[0], 0)}
+          {split && (
             <div
               className={`cat-pane-divider${dividerDragging ? " cat-pane-divider--dragging" : ""}`}
               role="separator"
@@ -893,11 +1061,9 @@ export function App() {
               onMouseDown={startDividerDrag}
               onDoubleClick={() => setDeck((d) => setRatio(d, 0.5))}
             />
-            {renderPane(deck.panes[1], 1)}
-          </div>
-        ) : (
-          renderPane(deck.panes[0], 0)
-        )}
+          )}
+          {split && renderPane(deck.panes[1], 1)}
+        </div>
       </div>
       <StatusBar
         panes={deck.panes.map((p, i) => ({
@@ -932,6 +1098,8 @@ export function App() {
           onSwapPanes: () => setDeck((d) => swapPanes(d)),
           onToggleTheme: toggleThemeMode,
           onNewResource: () => openNewResource(),
+          onOpenSpyglass: openSpyglass,
+          spyglassTools,
         }}
       />
       <Toaster position="top-right" richColors closeButton />

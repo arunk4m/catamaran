@@ -37,14 +37,32 @@ vi.mock("./components/ClusterHotbar", () => ({
   ClusterHotbar: ({
     onOpenContext,
     onOpenSettings,
+    onOpenSpyglass,
   }: {
     onOpenContext: (c: string) => void;
     onOpenSettings: () => void;
+    onOpenSpyglass?: (tool: string) => void;
   }) => (
     <div>
       <button onClick={() => onOpenContext("kind-dev")}>open-kind-dev</button>
       <button onClick={() => onOpenContext("prod")}>open-prod</button>
       <button onClick={onOpenSettings}>open-settings</button>
+      <button onClick={() => onOpenSpyglass?.("kiali")}>open-kiali</button>
+    </div>
+  ),
+}));
+vi.mock("./components/SpyglassView", () => ({
+  SpyglassView: ({
+    meta,
+    context,
+    active,
+  }: {
+    meta: { id: string };
+    context: string | null;
+    active?: boolean;
+  }) => (
+    <div data-testid="spyglass">
+      {meta.id}:{context}:{active ? "active" : "hidden"}
     </div>
   ),
 }));
@@ -301,6 +319,60 @@ describe("App", () => {
       fireEvent.keyDown(window, { key: "ArrowLeft", metaKey: true, altKey: true });
       fireEvent.click(screen.getByText("open-prod"));
       expect(screen.getAllByTestId("overview").map((n) => n.textContent)).toEqual(["prod", "prod"]);
+    });
+  });
+
+  describe("spyglass (Kiali / Grafana) tabs", () => {
+    it("opens a single Kiali tab targeting the focused cluster", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      fireEvent.click(screen.getByText("open-kiali"));
+
+      const spyglass = screen.getByTestId("spyglass");
+      expect(spyglass.textContent).toBe("kiali:kind-dev:active");
+      // Re-opening focuses the existing tab rather than stacking a second one.
+      fireEvent.click(screen.getByText("open-kiali"));
+      expect(screen.getAllByTestId("spyglass")).toHaveLength(1);
+    });
+
+    it("keeps the Kiali iframe mounted (just hidden) when switching to another tab", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      fireEvent.click(screen.getByText("open-kiali"));
+      expect(screen.getByTestId("spyglass").textContent).toBe("kiali:kind-dev:active");
+
+      // Switch to a resource tab: Kiali stays in the DOM (keep-alive), now hidden.
+      fireEvent.click(screen.getByText("nav-services"));
+      expect(screen.getByTestId("browser").textContent).toContain("kind-dev:services");
+      const spyglass = screen.getByTestId("spyglass");
+      expect(spyglass.textContent).toBe("kiali:kind-dev:hidden");
+      // Its keep-alive wrapper is hidden so it takes no space / no focus.
+      expect(spyglass.closest(".cat-pane-keepalive")?.hasAttribute("hidden")).toBe(true);
+    });
+
+    it("a locked Kiali pane sends sidebar navigation to the other pane when split", () => {
+      render(<App />);
+      fireEvent.click(screen.getByText("open-kind-dev"));
+      fireEvent.keyDown(window, { key: "\\", metaKey: true }); // split, focus starboard
+      // Focus the port pane and open Kiali there.
+      fireEvent.keyDown(window, { key: "ArrowLeft", metaKey: true, altKey: true });
+      fireEvent.click(screen.getByText("open-kiali"));
+      expect(screen.getByTestId("spyglass").textContent).toBe("kiali:kind-dev:active");
+
+      // With the Kiali pane focused, the sidebar Services selection must NOT
+      // replace Kiali — it lands in the starboard pane instead.
+      fireEvent.click(screen.getByText("nav-services"));
+      // Kiali survives, still mounted in the port pane.
+      expect(screen.getByTestId("spyglass").textContent).toContain("kiali:kind-dev");
+      // Services opened in the OTHER pane.
+      expect(
+        screen.getAllByTestId("browser").some((n) => n.textContent?.includes("services")),
+      ).toBe(true);
+      // The starboard pane holds the services browser, the port still holds Kiali.
+      const starboard = screen.getByTestId("pane-starboard");
+      expect(starboard.querySelector('[data-testid="browser"]')).not.toBeNull();
+      const port = screen.getByTestId("pane-port");
+      expect(port.querySelector('[data-testid="spyglass"]')).not.toBeNull();
     });
   });
 });

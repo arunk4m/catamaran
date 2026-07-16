@@ -238,6 +238,357 @@ export function saveAwsPortalUrl(url: string): void {
   }
 }
 
+const OBSERVABILITY_KEY = "catamaran.observability";
+const CUSTOM_TOOLS_KEY = "catamaran.observability.customTools";
+const HIDDEN_TOOLS_KEY = "catamaran.observability.hiddenTools";
+
+/** A tool id — a built-in id or a `custom-…` id for a user-added tool. */
+export type SpyglassTool = string;
+
+/**
+ * Icons a custom tool may pick, as lucide names. Keep in sync with
+ * `SPYGLASS_ICON` in ui/NavIcon.tsx (which maps name → component).
+ */
+export const SPYGLASS_ICON_CHOICES = [
+  "telescope",
+  "share-2",
+  "gauge",
+  "wind",
+  "radio",
+  "history",
+  "scan-eye",
+  "activity",
+  "line-chart",
+  "database",
+  "boxes",
+  "network",
+  "workflow",
+  "bug",
+  "shield",
+  "cloud",
+  "server",
+  "layout-dashboard",
+] as const;
+export type SpyglassIconName = (typeof SPYGLASS_ICON_CHOICES)[number];
+
+export function isSpyglassIcon(value: unknown): value is SpyglassIconName {
+  return typeof value === "string" && (SPYGLASS_ICON_CHOICES as readonly string[]).includes(value);
+}
+
+/** Static metadata for a spyglass tool — the single source of truth. */
+export interface SpyglassToolMeta {
+  id: SpyglassTool;
+  label: string;
+  blurb: string;
+  icon: SpyglassIconName;
+  /** True for a built-in tool (auto-detectable); false for a user-added one. */
+  builtin: boolean;
+  /** True for the mesh graph tool (Kiali): opens on the animated traffic graph. */
+  mesh?: boolean;
+  /**
+   * For built-ins: the pinned-service template (auto-detect overrides it).
+   * For custom tools: the actual pinned target the tool opens on.
+   */
+  defaultTarget: { namespace: string; service: string; port: number };
+}
+
+/** Built-in tools in display order (mirrors the backend TOOL_CATALOG). */
+export const SPYGLASS_CATALOG: SpyglassToolMeta[] = [
+  {
+    id: "kiali",
+    label: "Kiali",
+    blurb: "Service mesh topology and traffic",
+    icon: "share-2",
+    builtin: true,
+    mesh: true,
+    defaultTarget: { namespace: "istio-system", service: "kiali", port: 20001 },
+  },
+  {
+    id: "grafana",
+    label: "Grafana",
+    blurb: "Metrics dashboards",
+    icon: "gauge",
+    builtin: true,
+    defaultTarget: { namespace: "infra", service: "grafana", port: 80 },
+  },
+  {
+    id: "airflow",
+    label: "Airflow",
+    blurb: "Workflow DAGs and runs",
+    icon: "wind",
+    builtin: true,
+    defaultTarget: { namespace: "airflow", service: "airflow-webserver", port: 8080 },
+  },
+  {
+    id: "redpanda",
+    label: "Redpanda",
+    blurb: "Streaming topics and console",
+    icon: "radio",
+    builtin: true,
+    defaultTarget: { namespace: "infra", service: "redpanda-console", port: 8080 },
+  },
+  {
+    id: "temporal",
+    label: "Temporal",
+    blurb: "Workflow executions",
+    icon: "history",
+    builtin: true,
+    defaultTarget: { namespace: "temporal", service: "temporal-web", port: 8080 },
+  },
+  {
+    id: "tusklens",
+    label: "Tusk Lens",
+    blurb: "Tusk observability",
+    icon: "scan-eye",
+    builtin: true,
+    defaultTarget: { namespace: "default", service: "tusk-lens-frontend", port: 3000 },
+  },
+];
+
+export const SPYGLASS_TOOL_IDS: SpyglassTool[] = SPYGLASS_CATALOG.map((t) => t.id);
+
+/**
+ * A user-added observability tool. It's a pinned service (namespace/service/
+ * port) with a chosen label + icon; `savedPath` is its remembered in-tool view.
+ */
+export interface CustomSpyglassTool {
+  id: string;
+  label: string;
+  icon: SpyglassIconName;
+  namespace: string;
+  service: string;
+  port: number;
+  savedPath?: string;
+}
+
+function sanitizeCustomTool(value: unknown): CustomSpyglassTool | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (
+    typeof v.id !== "string" ||
+    !v.id ||
+    typeof v.label !== "string" ||
+    !v.label.trim() ||
+    typeof v.namespace !== "string" ||
+    typeof v.service !== "string" ||
+    !v.service.trim() ||
+    typeof v.port !== "number" ||
+    !Number.isInteger(v.port) ||
+    v.port <= 0 ||
+    v.port > 65535
+  ) {
+    return null;
+  }
+  const tool: CustomSpyglassTool = {
+    id: v.id,
+    label: v.label.trim(),
+    icon: isSpyglassIcon(v.icon) ? v.icon : "telescope",
+    namespace: v.namespace.trim(),
+    service: v.service.trim(),
+    port: v.port,
+  };
+  if (validSavedPath(v.savedPath)) tool.savedPath = v.savedPath;
+  return tool;
+}
+
+export function loadCustomTools(): CustomSpyglassTool[] {
+  try {
+    const raw = stored(CUSTOM_TOOLS_KEY);
+    if (!raw) return [];
+    const value = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    return value.map(sanitizeCustomTool).filter((t): t is CustomSpyglassTool => t !== null);
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomTools(tools: CustomSpyglassTool[]): void {
+  try {
+    localStorage.setItem(CUSTOM_TOOLS_KEY, JSON.stringify(tools));
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
+/** Built-in tool ids the user has hidden from the launcher/palette. */
+export function loadHiddenTools(): string[] {
+  try {
+    const raw = stored(HIDDEN_TOOLS_KEY);
+    if (!raw) return [];
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveHiddenTools(ids: string[]): void {
+  try {
+    localStorage.setItem(HIDDEN_TOOLS_KEY, JSON.stringify([...new Set(ids)]));
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
+/** Built-in tools the user has hidden, as metas (for the "restore" list). */
+export function hiddenBuiltinMetas(hidden: string[]): SpyglassToolMeta[] {
+  const hiddenSet = new Set(hidden);
+  return SPYGLASS_CATALOG.filter((t) => hiddenSet.has(t.id));
+}
+
+/** Turn a custom tool into the same meta shape as a built-in. */
+export function customToolMeta(tool: CustomSpyglassTool): SpyglassToolMeta {
+  return {
+    id: tool.id,
+    label: tool.label,
+    blurb: `${tool.namespace}/${tool.service}:${tool.port}`,
+    icon: tool.icon,
+    builtin: false,
+    defaultTarget: { namespace: tool.namespace, service: tool.service, port: tool.port },
+  };
+}
+
+/**
+ * The full tool list for the launcher/palette: visible built-ins first, then
+ * user-added tools. `hidden` removes built-ins the user chose to hide.
+ */
+export function resolveSpyglassTools(
+  custom: CustomSpyglassTool[],
+  hidden: string[] = [],
+): SpyglassToolMeta[] {
+  const hiddenSet = new Set(hidden);
+  return [
+    ...SPYGLASS_CATALOG.filter((t) => !hiddenSet.has(t.id)),
+    ...custom.map(customToolMeta),
+  ];
+}
+
+/** Look up a tool's meta across built-ins and custom tools. */
+export function findSpyglassTool(
+  toolId: string,
+  custom: CustomSpyglassTool[],
+): SpyglassToolMeta | null {
+  return resolveSpyglassTools(custom).find((t) => t.id === toolId) ?? null;
+}
+
+/**
+ * The source a tool should open with. Built-ins read their configured source;
+ * a custom tool is always its pinned service (carrying its saved view).
+ */
+export function spyglassSourceFor(
+  toolId: string,
+  config: ObservabilityConfig,
+  custom: CustomSpyglassTool[],
+): SpyglassSource {
+  const customTool = custom.find((t) => t.id === toolId);
+  if (customTool) {
+    const source: SpyglassSource = {
+      mode: "service",
+      namespace: customTool.namespace,
+      service: customTool.service,
+      port: customTool.port,
+    };
+    if (customTool.savedPath) source.savedPath = customTool.savedPath;
+    return source;
+  }
+  return config[toolId] ?? { mode: "auto" };
+}
+
+/** Generate a stable-ish custom tool id from a label (uniqueness enforced). */
+export function makeCustomToolId(label: string, existing: CustomSpyglassTool[]): string {
+  const slug = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "tool";
+  let id = `custom-${slug}`;
+  let n = 2;
+  const taken = new Set([...SPYGLASS_TOOL_IDS, ...existing.map((t) => t.id)]);
+  while (taken.has(id)) {
+    id = `custom-${slug}-${n++}`;
+  }
+  return id;
+}
+
+export function spyglassMeta(tool: SpyglassTool): SpyglassToolMeta {
+  return SPYGLASS_CATALOG.find((t) => t.id === tool) ?? SPYGLASS_CATALOG[0];
+}
+
+/**
+ * Where a tool lives: `auto` discovers it in the focused cluster on open,
+ * `service` pins a namespace/service/port to port-forward, `url` uses an
+ * already-exposed address as-is. `savedPath` is an in-tool view (path +
+ * query, e.g. a Kiali graph) the embedded page reopens on.
+ */
+export type SpyglassSource = (
+  | { mode: "auto" }
+  | { mode: "service"; namespace: string; service: string; port: number }
+  | { mode: "url"; url: string }
+) & { savedPath?: string };
+
+export type ObservabilityConfig = Record<SpyglassTool, SpyglassSource>;
+
+export const DEFAULT_OBSERVABILITY: ObservabilityConfig = Object.fromEntries(
+  SPYGLASS_TOOL_IDS.map((id) => [id, { mode: "auto" }]),
+) as ObservabilityConfig;
+
+/** A savable in-tool view: an absolute path (+ query/hash), never a full URL. */
+export function validSavedPath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    !value.startsWith("//") &&
+    !value.includes("://") &&
+    value.length <= 2048
+  );
+}
+
+function sanitizeSource(value: unknown): SpyglassSource {
+  let source: SpyglassSource = { mode: "auto" };
+  if (typeof value === "object" && value !== null) {
+    const v = value as Record<string, unknown>;
+    if (
+      v.mode === "service" &&
+      typeof v.namespace === "string" &&
+      typeof v.service === "string" &&
+      typeof v.port === "number" &&
+      Number.isInteger(v.port) &&
+      v.port > 0 &&
+      v.port <= 65535
+    ) {
+      source = { mode: "service", namespace: v.namespace, service: v.service, port: v.port };
+    } else if (v.mode === "url" && typeof v.url === "string" && /^https?:\/\//.test(v.url)) {
+      source = { mode: "url", url: v.url };
+    }
+    if (validSavedPath(v.savedPath)) {
+      source.savedPath = v.savedPath;
+    }
+  }
+  return source;
+}
+
+export function loadObservabilityConfig(): ObservabilityConfig {
+  try {
+    const raw = stored(OBSERVABILITY_KEY);
+    if (!raw) return { ...DEFAULT_OBSERVABILITY };
+    const value = JSON.parse(raw) as Partial<Record<SpyglassTool, unknown>>;
+    return Object.fromEntries(
+      SPYGLASS_TOOL_IDS.map((id) => [id, sanitizeSource(value[id])]),
+    ) as ObservabilityConfig;
+  } catch {
+    return { ...DEFAULT_OBSERVABILITY };
+  }
+}
+
+export function saveObservabilityConfig(config: ObservabilityConfig): void {
+  try {
+    localStorage.setItem(OBSERVABILITY_KEY, JSON.stringify(config));
+  } catch {
+    // ignore unavailable/quota-exceeded storage
+  }
+}
+
 const DECK_KEY = "catamaran.deck";
 
 /** Persisted split-screen deck layout: split on/off, pane ratio, linked nav. */

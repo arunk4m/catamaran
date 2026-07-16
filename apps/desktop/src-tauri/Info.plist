@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Spyglass embeds Kiali/Grafana through a loopback relay (http://127.0.0.1
+	  port-forward). macOS App Transport Security blocks plain-HTTP subframes by
+	  default, which would silently blank the embedded tool. NSAllowsLocalNetworking
+	  permits loopback/local-network loads only — public HTTP stays blocked.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

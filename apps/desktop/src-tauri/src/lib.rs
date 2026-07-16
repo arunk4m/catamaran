@@ -129,7 +129,18 @@ fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
 
     app.on_menu_event(move |app, event| {
         if event.id().as_ref() == CLOSE_TAB_MENU_ID {
-            let _ = app.emit("close-active-tab", ());
+            // In a spyglass (or any auxiliary) window, Cmd+W closes that
+            // window; only the main window routes it to tab-closing.
+            use tauri::Manager;
+            let focused_aux = app
+                .webview_windows()
+                .into_iter()
+                .find(|(label, w)| label != "main" && w.is_focused().unwrap_or(false));
+            if let Some((_, window)) = focused_aux {
+                let _ = window.close();
+            } else {
+                let _ = app.emit("close-active-tab", ());
+            }
         }
     });
 

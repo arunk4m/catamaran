@@ -158,6 +158,13 @@ export function McpSettingsSection() {
             </span>
           )}
         </div>
+        {cli?.installed && !cli.on_path && (
+          <p className="text-sm text-amber-600 dark:text-amber-500">
+            Its directory isn&apos;t on your PATH yet — add it (e.g.{" "}
+            <code className="cat-mono">export PATH=&quot;$HOME/.local/bin:$PATH&quot;</code>) so clients
+            can find <code className="cat-mono">catamaran</code>.
+          </p>
+        )}
         {cliMessage && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{cliMessage}</p>}
       </section>
 

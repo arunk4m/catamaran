@@ -117,7 +117,8 @@ export type ResourceKind =
   | "helmreleases"
   | "settings"
   | "newresource"
-  | "editresource";
+  | "editresource"
+  | "spyglass";
 
 export const RESOURCE_LABELS: Record<ResourceKind, string> = {
   overview: "Overview",
@@ -161,6 +162,7 @@ export const RESOURCE_LABELS: Record<ResourceKind, string> = {
   settings: "Settings",
   newresource: "New Resource",
   editresource: "Edit Resource",
+  spyglass: "Observability",
 };
 
 export const K8S_KIND: Record<ResourceKind, string> = {
@@ -205,6 +207,7 @@ export const K8S_KIND: Record<ResourceKind, string> = {
   settings: "",
   newresource: "",
   editresource: "",
+  spyglass: "",
 };
 
 const CLUSTER_SCOPED: ResourceKind[] = [

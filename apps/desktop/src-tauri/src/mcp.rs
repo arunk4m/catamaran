@@ -98,46 +98,73 @@ pub fn mcp_http_status(manager: State<'_, McpHttpManager>) -> Option<String> {
 #[derive(Debug, Serialize)]
 pub struct CliStatus {
     installed: bool,
-    /// The install path (`/usr/local/bin/catamaran`).
+    /// The install path (`~/.local/bin/catamaran`).
     path: String,
     /// What the symlink resolves to, if present.
     links_to: Option<String>,
+    /// Whether the install directory is on the current `$PATH`.
+    on_path: bool,
 }
 
-const CLI_PATH: &str = "/usr/local/bin/catamaran";
+/// User-writable install dir — no elevation needed, unlike `/usr/local/bin`.
+fn cli_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local").join("bin"))
+}
 
-/// Report whether the `catamaran` CLI is installed on PATH and where it points.
+fn cli_path() -> Option<std::path::PathBuf> {
+    cli_dir().map(|dir| dir.join("catamaran"))
+}
+
+/// Whether `dir` is one of the entries in `$PATH`.
+fn dir_on_path(dir: &std::path::Path) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|entry| entry == dir))
+        .unwrap_or(false)
+}
+
+/// Report whether the `catamaran` CLI is installed and where it points.
 #[tauri::command]
 pub fn catamaran_cli_status() -> CliStatus {
-    let path = std::path::Path::new(CLI_PATH);
+    let dir = cli_dir();
+    let path = cli_path();
     CliStatus {
-        installed: path.exists(),
-        path: CLI_PATH.to_string(),
-        links_to: std::fs::read_link(path)
-            .ok()
+        installed: path.as_ref().is_some_and(|p| p.exists()),
+        path: path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        links_to: path
+            .as_ref()
+            .and_then(|p| std::fs::read_link(p).ok())
             .map(|p| p.to_string_lossy().to_string()),
+        on_path: dir.as_deref().is_some_and(dir_on_path),
     }
 }
 
-/// Symlink the running executable to `/usr/local/bin/catamaran` so MCP clients can
-/// spawn `catamaran --mcp-stdio`. Returns the install path on success; on a write
-/// failure returns a message with the manual command to run.
+/// Symlink the running executable to `~/.local/bin/catamaran` so MCP clients can
+/// spawn `catamaran --mcp-stdio`. Creates the directory if needed (no elevation);
+/// returns the install path on success, or the manual command on failure.
 #[tauri::command]
 pub fn install_catamaran_cli() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
 
     #[cfg(unix)]
     {
-        let target = std::path::Path::new(CLI_PATH);
+        let dir = cli_dir().ok_or("Could not resolve $HOME")?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create {} ({e})", dir.display()))?;
+        let target = dir.join("catamaran");
         // Replace any existing symlink/file at the target.
-        if target.exists() || std::fs::symlink_metadata(target).is_ok() {
-            let _ = std::fs::remove_file(target);
+        if target.symlink_metadata().is_ok() {
+            let _ = std::fs::remove_file(&target);
         }
-        match std::os::unix::fs::symlink(&exe, target) {
-            Ok(()) => Ok(CLI_PATH.to_string()),
+        match std::os::unix::fs::symlink(&exe, &target) {
+            Ok(()) => Ok(target.to_string_lossy().to_string()),
             Err(e) => Err(format!(
-                "Could not write {CLI_PATH} ({e}). Run this in a terminal:\n  sudo ln -sf \"{}\" {CLI_PATH}",
-                exe.display()
+                "Could not write {} ({e}). Run this in a terminal:\n  ln -sf \"{}\" \"{}\"",
+                target.display(),
+                exe.display(),
+                target.display()
             )),
         }
     }

@@ -1,12 +1,21 @@
 import React, { useEffect, useState } from "react";
-import { Moon, Settings, Sun } from "lucide-react";
+import { Moon, Settings, Sun, Telescope } from "lucide-react";
 import catamaranMark from "../assets/catamaran-mark.svg";
 import { listContexts, type ClusterContext } from "../lib/clusters";
 import {
   type Theme,
 } from "../ui";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { spyglassIcon } from "../ui/NavIcon";
 import { ContextAvatar } from "./ContextAvatar";
-import { contextDisplayName, orderContexts, type ContextProfiles } from "../lib/settings";
+import {
+  contextDisplayName,
+  orderContexts,
+  SPYGLASS_CATALOG,
+  type ContextProfiles,
+  type SpyglassTool,
+  type SpyglassToolMeta,
+} from "../lib/settings";
 
 const EMPTY_LIST: string[] = [];
 
@@ -16,12 +25,16 @@ const EMPTY_LIST: string[] = [];
  * carries a gradient ring; every context that's aboard (open in any pane)
  * shows a green dot. Theme and settings live at the foot of the mast.
  */
+const DEFAULT_SPYGLASS_TOOLS: SpyglassToolMeta[] = SPYGLASS_CATALOG;
+
 export function ClusterHotbar({
   openContext,
   onOpenContext,
   theme,
   onToggleTheme,
   onOpenSettings,
+  onOpenSpyglass,
+  spyglassTools = DEFAULT_SPYGLASS_TOOLS,
   contextProfiles = {},
   kubeconfigFiles = EMPTY_LIST,
   contextOrder = EMPTY_LIST,
@@ -32,6 +45,10 @@ export function ClusterHotbar({
   theme: Theme;
   onToggleTheme: () => void;
   onOpenSettings: () => void;
+  /** Open an observability tool as a workspace tab against the focused context. */
+  onOpenSpyglass?: (tool: SpyglassTool) => void;
+  /** Tools listed in the observability menu (built-in + user-added). */
+  spyglassTools?: SpyglassToolMeta[];
   contextProfiles?: ContextProfiles;
   kubeconfigFiles?: string[];
   contextOrder?: string[];
@@ -39,6 +56,7 @@ export function ClusterHotbar({
   openContexts?: string[];
 }) {
   const [contexts, setContexts] = useState<ClusterContext[]>([]);
+  const [spyglassMenuOpen, setSpyglassMenuOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -81,6 +99,50 @@ export function ClusterHotbar({
         })}
       </div>
       <div className="cat-hotbar__actions">
+        {onOpenSpyglass && (
+          <>
+            <Popover open={spyglassMenuOpen} onOpenChange={setSpyglassMenuOpen}>
+              <PopoverTrigger
+                className="cat-hotbar__theme cat-hotbar__spyglass"
+                aria-label="Open an observability tool"
+                title="Observability — Kiali, Grafana, Airflow, Redpanda, Temporal, Tusk Lens"
+              >
+                <Telescope aria-hidden="true" />
+              </PopoverTrigger>
+              <PopoverContent side="right" align="end" className="w-60 p-0">
+                <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+                  Observability
+                </div>
+                <ul className="py-1">
+                  {spyglassTools.map((tool) => {
+                    const Icon = spyglassIcon(tool.icon);
+                    return (
+                      <li key={tool.id}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                          onClick={() => {
+                            setSpyglassMenuOpen(false);
+                            onOpenSpyglass(tool.id);
+                          }}
+                        >
+                          <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{tool.label}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {tool.blurb}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </PopoverContent>
+            </Popover>
+            <span className="cat-hotbar__actions-keel" aria-hidden="true" />
+          </>
+        )}
         <button
           className="cat-hotbar__theme"
           aria-label={theme.mode === "dark" ? "Switch to light mode" : "Switch to dark mode"}

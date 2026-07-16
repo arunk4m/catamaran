@@ -152,4 +152,26 @@ describe("workspace actions", () => {
     await screen.findByText("Split the Deck");
     expect(screen.queryByText("New Resource…")).toBeNull();
   });
+
+  it("runs the spyglass openers when wired", async () => {
+    const onOpenSpyglass = vi.fn();
+    setupWithActions({ onOpenSpyglass });
+    await userEvent.click(await screen.findByText("Open Kiali"));
+    expect(onOpenSpyglass).toHaveBeenCalledWith("kiali");
+  });
+
+  it("finds Grafana through the mesh/dashboards keywords", async () => {
+    const onOpenSpyglass = vi.fn();
+    setupWithActions({ onOpenSpyglass });
+    await userEvent.type(screen.getByPlaceholderText("Search resources and views…"), "dashboards");
+    await userEvent.click(await screen.findByText("Open Grafana"));
+    expect(onOpenSpyglass).toHaveBeenCalledWith("grafana");
+  });
+
+  it("hides spyglass openers when not wired", async () => {
+    setupWithActions();
+    await screen.findByText("Split the Deck");
+    expect(screen.queryByText("Open Kiali")).toBeNull();
+    expect(screen.queryByText("Open Grafana")).toBeNull();
+  });
 });

@@ -24,6 +24,7 @@ import {
   GripVertical,
   ClipboardPaste,
   Plug,
+  Telescope,
 } from "lucide-react";
 import {
   PageHeader,
@@ -41,6 +42,8 @@ import { listContexts, type ClusterContext } from "../lib/clusters";
 import { ssoProfiles, ssoLogin, openExternalUrl, type SsoProfileInfo } from "../lib/aws";
 import { notify } from "../lib/notify";
 import {
+  DEFAULT_OBSERVABILITY,
+  type CustomSpyglassTool,
   DEFAULT_WORKSPACE_LAYOUT,
   REQUEST_TIMEOUT,
   contextDisplayName,
@@ -49,6 +52,7 @@ import {
   saveUpdateChannel,
   type ContextLogo,
   type ContextProfiles,
+  type ObservabilityConfig,
   type UpdateChannel,
   type WorkspaceLayoutSettings,
   orderContexts,
@@ -56,6 +60,7 @@ import {
 import { updateRequestTimeout } from "../lib/requestTimeout";
 import { ContextAvatar, CONTEXT_LOGO_OPTIONS } from "./ContextAvatar";
 import { McpSettingsSection } from "./McpSettingsSection";
+import { SpyglassSettings } from "./SpyglassSettings";
 import { pickKubeconfigFiles, savePastedKubeconfig } from "../lib/files";
 import { checkForUpdate, installUpdate, type UpdateMeta } from "../lib/updater";
 import { appVersion, relaunchApp } from "../transport/transport";
@@ -72,6 +77,7 @@ export type SettingsSection =
   | "kubernetes"
   | "contexts"
   | "cloud"
+  | "observability"
   | "mcp"
   | "updates";
 
@@ -100,6 +106,7 @@ const SETTINGS_SECTIONS: Array<{
   { id: "kubernetes", label: "Kubernetes", description: "Workspace defaults", icon: Network },
   { id: "contexts", label: "Contexts", description: "Names, logos and colors", icon: Boxes },
   { id: "cloud", label: "Cloud access", description: "AWS access portal and SSO", icon: Cloud },
+  { id: "observability", label: "Observability", description: "Kiali and Grafana windows", icon: Telescope },
   { id: "mcp", label: "MCP", description: "Agent access and client config", icon: Plug },
   { id: "updates", label: "Updates", description: "App version and updates", icon: Download },
 ];
@@ -122,6 +129,13 @@ export function SettingsView({
   onContextOrderChange,
   awsPortalUrl = "",
   onAwsPortalUrlChange = () => {},
+  observability = DEFAULT_OBSERVABILITY,
+  onObservabilityChange = () => {},
+  customTools = [],
+  onCustomToolsChange = () => {},
+  hiddenTools = [],
+  onHiddenToolsChange = () => {},
+  activeContext = null,
   initialSection = "appearance",
 }: {
   theme: Theme;
@@ -140,6 +154,17 @@ export function SettingsView({
   /** Configured AWS access-portal URL ("" = not configured). */
   awsPortalUrl?: string;
   onAwsPortalUrlChange?: (url: string) => void;
+  /** Where the built-in tools live (per-tool source). */
+  observability?: ObservabilityConfig;
+  onObservabilityChange?: (config: ObservabilityConfig) => void;
+  /** User-added observability tools. */
+  customTools?: CustomSpyglassTool[];
+  onCustomToolsChange?: (tools: CustomSpyglassTool[]) => void;
+  /** Built-in tools hidden from the launcher/palette. */
+  hiddenTools?: string[];
+  onHiddenToolsChange?: (ids: string[]) => void;
+  /** The focused pane's cluster, used by observability detection. */
+  activeContext?: string | null;
   /** Section to open on mount (e.g. deep-linked from the update toast). */
   initialSection?: SettingsSection;
 }) {
@@ -864,6 +889,23 @@ export function SettingsView({
                   </ul>
                 )}
               </div>
+            </SectionPanel>
+          )}
+
+          {section === "observability" && (
+            <SectionPanel
+              title="Observability"
+              description="Kiali, Grafana, Airflow, Redpanda, Temporal and Tusk Lens embed as workspace tabs — Catamaran port-forwards each and relays past its frame blockers. Auto-detect finds them in the focused cluster; pin a service or an external URL per tool to skip the lookup."
+            >
+              <SpyglassSettings
+                config={observability}
+                onConfigChange={onObservabilityChange}
+                customTools={customTools}
+                onCustomToolsChange={onCustomToolsChange}
+                hiddenTools={hiddenTools}
+                onHiddenToolsChange={onHiddenToolsChange}
+                activeContext={activeContext}
+              />
             </SectionPanel>
           )}
 
